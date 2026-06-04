@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WC 2026 Predictions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="screen-loading">
+  <div class="spinner"></div>
+  <span style="font-size:13px;color:#6b7a99">Loading...</span>
+</div>
+
+<div id="screen-auth" style="display:none">
+  <div class="auth-box">
+    <div class="auth-logo">WC <span>2026</span></div>
+    <div class="auth-sub">Predictions · All 104 matches</div>
+    <div id="auth-msg" class="auth-msg"></div>
+    <div id="auth-name-row" style="display:none">
+      <label class="auth-lbl">Display Name</label>
+      <input class="auth-inp" id="auth-name" type="text" placeholder="Your name (shown on leaderboard)">
+    </div>
+    <label class="auth-lbl">Email</label>
+    <input class="auth-inp" id="auth-email" type="email" placeholder="you@example.com" autocomplete="email">
+    <label class="auth-lbl">Password</label>
+    <input class="auth-inp" id="auth-pass" type="password" placeholder="password" autocomplete="current-password">
+    <button class="btn-main" id="btn-auth" onclick="doAuth()">Sign in</button>
+    <div class="auth-toggle">
+      <span id="tog-txt">No account?</span>
+      <a onclick="toggleMode()"> Sign up</a>
+    </div>
+  </div>
+</div>
+
+<div id="screen-app" style="display:none;flex-direction:column">
+  <header class="site-header">
+    <div class="logo">WC <span>2026</span></div>
+    <div class="hdr-right">
+      <span class="hdr-name" id="hdr-name"></span>
+      <button class="btn-out" onclick="signOut()">Sign out</button>
+    </div>
+  </header>
+  <div class="main">
+    <div class="tab-wrap">
+      <div class="tab-bar">
+        <div class="tab active" data-tab="predict" onclick="switchTab(this)">My Predictions</div>
+        <div class="tab" data-tab="leaderboard" onclick="switchTab(this)">Standings</div>
+        <div class="tab" data-tab="groups" onclick="switchTab(this)">Groups</div>
+        <div class="tab" data-tab="admin" id="tab-admin" style="display:none" onclick="switchTab(this)">Admin</div>
+        <div class="tab" data-tab="rules" onclick="switchTab(this)">Rules</div>
+      </div>
+    </div>
+    <div id="viewer-bar" class="viewer-bar">
+      <label>Viewing:</label>
+      <span class="viewer-name" id="viewer-name">Me</span>
+      <button class="btn-browse" onclick="openModal()">Browse players</button>
+      <div class="pstat-row">
+        <div class="pstat"><div class="pstat-val" id="s-filled">0</div><div class="pstat-lbl">Filled</div></div>
+        <div class="pstat"><div class="pstat-val" id="s-pts">-</div><div class="pstat-lbl">Live pts</div></div>
+      </div>
+    </div>
+    <div id="viewer-prog" style="display:none;padding:8px 16px;background:var(--green-l);border:1px solid #b8dcc9;border-top:none">
+      <div class="prog-bar-wrap"><div class="prog-bar-fill" id="prog-fill" style="width:0%"></div></div>
+      <div class="prog-bar-text" id="prog-text">0 / 104 predictions entered</div>
+    </div>
+    <div id="panel-predict" class="panel"></div>
+    <div id="panel-leaderboard" class="panel" style="display:none"></div>
+    <div id="panel-groups" class="panel" style="display:none"></div>
+    <div id="panel-admin" class="panel" style="display:none"></div>
+    <div id="panel-rules" class="panel" style="display:none"></div>
+  </div>
+</div>
+
+<div id="modal-bg" class="modal-bg" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-hdr">
+      <span class="modal-ttl">Browse Players</span>
+      <span class="modal-x" onclick="closeModal()">×</span>
+    </div>
+    <div class="modal-srch"><input id="srch-inp" placeholder="Search by name..." oninput="searchUsers(this.value)"></div>
+    <div class="modal-list" id="srch-list"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Supabase client library (must load first) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Your credentials (edit this file) -->
+<script src="config.js"></script>
+<!-- Match data -->
+<script src="data.js"></script>
+<!-- App logic (loads last) -->
+<script src="app.js"></script>
+</body>
+</html>
