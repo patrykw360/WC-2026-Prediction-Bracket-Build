@@ -10,7 +10,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
   var bad =
     !SUPABASE_URL ||
     !SUPABASE_KEY ||
-    SUPABASE_URL === 'https://honqqzgmbjneetuwhdef.supabase.co' ||
+    SUPABASE_URL === 'https://honqqzgmbjneetuwhdef.supabase.co'; ||
     SUPABASE_KEY === 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhvbnFxemdtYmpuZWV0dXdoZGVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODg1NTksImV4cCI6MjA5NDE2NDU1OX0.RXX5TlmHJTg9vU2M-695zfHUKfoyx1JKYdioWoZ-vFc' ||
     SUPABASE_URL.includes('/rest/v1');
 
