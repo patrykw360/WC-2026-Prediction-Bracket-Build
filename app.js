@@ -117,7 +117,9 @@ function loadApp(){
     var name=(myProfile&&myProfile.display_name)||me.email.split('@')[0];
     document.getElementById('hdr-name').textContent=name;
     document.getElementById('viewer-name').textContent=name;
-    if(myProfile&&myProfile.is_admin)document.getElementById('tab-admin').style.display='';
+    // Admin tab removed from UI — guard remains in case it's re-added
+    var adminTabEl = document.getElementById('tab-admin');
+    if(adminTabEl && myProfile && myProfile.is_admin) adminTabEl.style.display='';
     renderPredict();
     renderRules();
     setupRealtime();
@@ -161,6 +163,9 @@ function renderPredict(){
   var isMe=viewedUid===null;
   var html='';
   var filled=0, pts=0;
+
+  // Build the auto-advanced bracket from this player's predictions
+  var bracket = buildBracket(preds);
 
   // ── Group stage ──
   html+='<div class="stage-hdr"><span class="stage-hdr-title">Group Stage</span><span class="stage-hdr-sub">48 matches · Jun 11 – Jun 27</span></div>';
@@ -211,6 +216,18 @@ function renderPredict(){
   }
 
   // ── Knockout stages ──
+  // Status banner explaining auto-advancement
+  if (!bracket.complete.group) {
+    html += '<div style="background:#fff8e1;border:1px solid #ffd54f;border-radius:8px;padding:10px 14px;margin:12px 14px 0;font-size:12px;color:#856404">' +
+            '<strong>Knockout matchups appear once you finish the group stage.</strong> ' +
+            'Predict all 48 group games above to see who YOU think will face who in the Round of 32.' +
+            '</div>';
+  } else {
+    html += '<div style="background:#e6f4ec;border:1px solid #70c090;border-radius:8px;padding:10px 14px;margin:12px 14px 0;font-size:12px;color:#0d4a2a">' +
+            '<strong>Bracket built from your group-stage picks.</strong> ' +
+            'As you predict each knockout round, the next round\'s matchups update automatically. Predict draws? Pick the AET winner so the bracket can continue.' +
+            '</div>';
+  }
   var stages=['r32','r16','qf','sf','3rd','final'];
   stages.forEach(function(stage){
     var ms=KO_MATCHES.filter(function(m){return m.stage===stage;}).sort(function(a,b){return a.s-b.s;});
@@ -234,9 +251,10 @@ function renderPredict(){
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onKoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"':'';
-      // Use real team names from result if available, else slot description
-      var teamA=res&&res.team_a?res.team_a:m.a;
-      var teamB=res&&res.team_b?res.team_b:m.b;
+      // Use real team names from result if available, else from bracket prediction, else slot description
+      var brTeams = bracket.koTeams[m.id] || {};
+      var teamA = res && res.team_a ? res.team_a : (brTeams.a || m.a);
+      var teamB = res && res.team_b ? res.team_b : (brTeams.b || m.b);
       html+='<div class="'+rc+'" data-mid="'+m.id+'">';
       html+='<div class="team home">'+esc(teamA)+'</div>';
       html+='<div class="ko-sc-cell">';
