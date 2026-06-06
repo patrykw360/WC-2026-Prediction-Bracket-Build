@@ -33,8 +33,8 @@ const GROUP_MATCHES = [
   {id:'GB_12',g:'B',a:'Switzerland',b:'Qatar',ko:'2026-06-13T19:00:00Z',s:8},
   {id:'GB_21',g:'B',a:'Canada',b:'Switzerland',ko:'2026-06-18T19:00:00Z',s:9},
   {id:'GB_22',g:'B',a:'Qatar',b:'Bosnia-Herzegovina',ko:'2026-06-18T22:00:00Z',s:10},
-  {id:'GB_31',g:'B',a:'Switzerland',b:'Canada',ko:'2026-06-24T19:00:00Z',s:11},
-  {id:'GB_32',g:'B',a:'Bosnia-Herzegovina',b:'Qatar',ko:'2026-06-24T19:00:00Z',s:12},
+  {id:'GB_31',g:'B',a:'Switzerland',b:'Bosnia-Herzegovina',ko:'2026-06-24T19:00:00Z',s:11},
+  {id:'GB_32',g:'B',a:'Canada',b:'Qatar',ko:'2026-06-24T19:00:00Z',s:12},
   // Group C
   {id:'GC_11',g:'C',a:'Brazil',b:'Morocco',ko:'2026-06-13T22:00:00Z',s:13},
   {id:'GC_12',g:'C',a:'Haiti',b:'Scotland',ko:'2026-06-14T01:00:00Z',s:14},
