@@ -48,6 +48,11 @@ function fmtKO(iso){
   var d=new Date(iso);
   return d.toLocaleDateString('nl-NL',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('nl-NL',{hour:'2-digit',minute:'2-digit'});
 }
+function dismissWelcome(){
+  try{ localStorage.setItem('wc26_welcome_dismissed','1'); }catch(e){}
+  var el=document.getElementById('welcome-banner');
+  if(el)el.style.display='none';
+}
 
 // ─────────────────────────────────────────────────────────────
 // AUTH
@@ -166,6 +171,40 @@ function renderPredict(){
 
   // Build the auto-advanced bracket from this player's predictions
   var bracket = buildBracket(preds);
+
+  // ── Welcome message (dismissable, only shown to self, only once per browser) ──
+  if (isMe) {
+    var dismissed = false;
+    try { dismissed = localStorage.getItem('wc26_welcome_dismissed') === '1'; } catch(e){}
+    if (!dismissed) {
+      html +=
+        '<div id="welcome-banner" style="background:linear-gradient(135deg,#0d1f3c 0%,#1e3a6e 100%);color:#fff;padding:16px 18px;margin:0;position:relative">' +
+          '<button onclick="dismissWelcome()" style="position:absolute;top:8px;right:10px;background:rgba(255,255,255,.15);border:none;color:#fff;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;line-height:1" title="Dismiss">×</button>' +
+          '<div style="font-family:var(--fh);font-size:16px;font-weight:800;margin-bottom:8px;letter-spacing:.3px">Welcome to WC 2026 Predictions 🏆</div>' +
+          '<div style="font-size:13px;line-height:1.6;opacity:.92">' +
+            '<strong>1.</strong> Predict the final score of every match below — start with the 48 group games.<br>' +
+            '<strong>2.</strong> Once you finish the group stage, your Round of 32 will fill in based on YOUR predicted standings.<br>' +
+            '<strong>3.</strong> Keep predicting each knockout round — winners chain into the next round.<br>' +
+            '<strong>4.</strong> Picks save automatically. The green Save button at the bottom of each round is a backup.<br>' +
+            '<strong>5.</strong> Predictions lock at kickoff. Visit the Standings tab to track how you stack up.' +
+          '</div>' +
+        '</div>';
+    }
+  }
+
+  // Count filled group predictions for completion message
+  var groupFilled = GROUP_MATCHES.filter(function(m){
+    var p = preds[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
+  }).length;
+
+  // ── Group stage completion banner ──
+  if (isMe && groupFilled === GROUP_MATCHES.length) {
+    html += '<div style="background:#e6f4ec;border-bottom:1px solid #70c090;padding:12px 18px;color:#0d4a2a;font-size:13px;line-height:1.5">' +
+              '<strong style="font-family:var(--fh);font-size:14px">✓ Group stage picks are locked in.</strong> ' +
+              'All 48 predictions saved. Scroll down to predict the knockout rounds — your bracket has been built from your group-stage picks.' +
+            '</div>';
+  }
 
   // ── Group stage ──
   html+='<div class="stage-hdr"><span class="stage-hdr-title">Group Stage</span><span class="stage-hdr-sub">48 matches · Jun 11 – Jun 27</span></div>';
@@ -555,6 +594,7 @@ function createGroup(){
     var grp=r.data;
     sb.from('group_members').insert({group_id:grp.id,user_id:me.id}).then(function(){
       myGroups.push(grp);
+      srchCache = {};
       toast('Group created! Code: '+grp.code,'ok');
       renderGroups();
     });
@@ -570,6 +610,7 @@ function joinGroup(){
     sb.from('group_members').insert({group_id:grp.id,user_id:me.id}).then(function(r2){
       if(r2.error){toast('Error: '+r2.error.message,'err');return;}
       myGroups.push(grp);
+      srchCache = {};
       toast('Joined "'+grp.name+'"!','ok');
       renderGroups();
     });
@@ -580,6 +621,7 @@ function leaveGroup(gid){
   sb.from('group_members').delete().eq('group_id',gid).eq('user_id',me.id).then(function(r){
     if(r.error){toast('Error','err');return;}
     myGroups=myGroups.filter(function(g){return g.id!==gid;});
+    srchCache = {};
     toast('Left group','ok');
     renderGroups();
   });
@@ -598,14 +640,45 @@ function closeModal(){document.getElementById('modal-bg').style.display='none';}
 function searchUsers(q){
   var key=q.trim().toLowerCase();
   if(srchCache[key]){renderSrch(srchCache[key]);return;}
-  var query=sb.from('profiles').select('id,display_name').limit(40);
-  if(key)query=query.ilike('display_name','%'+key+'%');
-  else query=query.order('display_name');
-  query.then(function(r){srchCache[key]=r.data||[];renderSrch(srchCache[key]);});
+  // Only show users who share at least one league with me.
+  // Step 1: get all member rows for my groups.
+  if (!myGroups.length) {
+    // No leagues yet → empty result with a friendly hint shown by renderSrch
+    srchCache[key] = [];
+    renderSrch([]);
+    return;
+  }
+  var myGroupIds = myGroups.map(function(g){return g.id;});
+  sb.from('group_members').select('user_id,profiles(id,display_name)')
+    .in('group_id', myGroupIds)
+    .then(function(r){
+      if (r.error) { renderSrch([]); return; }
+      // Deduplicate by user_id
+      var seen = {};
+      var users = [];
+      (r.data||[]).forEach(function(row){
+        var p = row.profiles;
+        if (!p || seen[p.id]) return;
+        seen[p.id] = true;
+        if (!key || (p.display_name||'').toLowerCase().indexOf(key) !== -1) {
+          users.push({id: p.id, display_name: p.display_name});
+        }
+      });
+      users.sort(function(a,b){return (a.display_name||'').localeCompare(b.display_name||'');});
+      srchCache[key] = users;
+      renderSrch(users);
+    });
 }
 function renderSrch(users){
   var el=document.getElementById('srch-list');
-  if(!users.length){el.innerHTML='<div class="modal-empty">No players found</div>';return;}
+  if(!users.length){
+    if (!myGroups.length) {
+      el.innerHTML='<div class="modal-empty"><strong>You\'re not in any leagues yet.</strong><br><br>Go to the Groups tab to create or join a league. Then you can browse your league-mates\' picks here.</div>';
+    } else {
+      el.innerHTML='<div class="modal-empty">No league-mates match your search.</div>';
+    }
+    return;
+  }
   el.innerHTML=users.map(function(u){
     var n=u.display_name||u.id;
     return '<div class="modal-item" onclick="selectUser(\''+u.id+'\',\''+esc(n)+'\')"><div class="m-av">'+n.slice(0,2).toUpperCase()+'</div><span class="m-nm">'+esc(n)+(u.id===me.id?' (me)':'')+'</span></div>';
