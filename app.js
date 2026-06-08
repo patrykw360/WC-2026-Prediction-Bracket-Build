@@ -8,9 +8,11 @@
 // ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
-var viewedUid=null, viewedPreds={};
+var myPredsR2={};                 // Round 2 predictions (official knockouts)
+var viewedUid=null, viewedPreds={}, viewedPredsR2={};
 var lbData=[], lbOffset=0, lbMode='global', lbGroupId=null;
 var myGroups=[];
+var tournamentState={round2_open:false, group_results_entered:0, group_matches_total:72};
 var appLoaded=false, realtimeSetup=false;
 var savingSet={}, saveTimers={};
 var srchCache={};
@@ -107,10 +109,15 @@ function init(){
 function loadApp(){
   show('screen-loading');
   Promise.all([
-    sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',me.id),
+    // Round 1 predictions
+    sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',me.id).eq('round',1),
     sb.from('results').select('match_id,goals_a,goals_b,multiplier'),
     sb.from('profiles').select('id,display_name,is_admin').eq('id',me.id).single(),
-    sb.from('group_members').select('group_id,groups(id,name,code)').eq('user_id',me.id)
+    sb.from('group_members').select('group_id,groups(id,name,code)').eq('user_id',me.id),
+    // Round 2 predictions
+    sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',me.id).eq('round',2),
+    // Tournament state (round2_open flag)
+    sb.from('tournament_state').select('*').single()
   ]).then(function(rs){
     myPreds={};
     (rs[0].data||[]).forEach(function(p){myPreds[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
@@ -119,6 +126,9 @@ function loadApp(){
     myProfile=rs[2].data||null;
     myGroups=[];
     (rs[3].data||[]).forEach(function(gm){if(gm.groups)myGroups.push(gm.groups);});
+    myPredsR2={};
+    (rs[4].data||[]).forEach(function(p){myPredsR2[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
+    if (rs[5] && rs[5].data) tournamentState = rs[5].data;
     var name=(myProfile&&myProfile.display_name)||me.email.split('@')[0];
     document.getElementById('hdr-name').textContent=name;
     document.getElementById('viewer-name').textContent=name;
@@ -136,7 +146,11 @@ function setupRealtime(){
   if(realtimeSetup)return; realtimeSetup=true;
   sb.channel('live').on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
     if(p.new&&p.new.match_id)allResults[p.new.match_id]=p.new;
-    renderPredict();
+    // Refresh tournament state — may have just flipped to Round 2 open
+    sb.from('tournament_state').select('*').single().then(function(r){
+      if(r&&r.data)tournamentState=r.data;
+      renderPredict();
+    });
     if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
   }).subscribe();
 }
@@ -335,16 +349,222 @@ function renderPredict(){
     }
   });
 
+  // ── ROUND 2: Official knockout predictions (only once group stage results are all in) ──
+  if (tournamentState.round2_open) {
+    html += renderRound2Section(isMe);
+  } else if (isMe && bracket.complete.group) {
+    // Group stage complete in user's predictions, but Round 2 not open yet
+    html += '<div style="background:#f4f6fb;border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin:18px 14px 0;font-size:13px;color:var(--muted);text-align:center">' +
+              '<strong style="color:var(--navy);font-family:var(--fh);font-size:14px;display:block;margin-bottom:6px">Round 2 unlocks when group stage ends</strong>' +
+              'After the real group-stage results are entered (all 72 matches), a second prediction round opens for the official Round of 32 onwards. Your Round 2 points stack on top of Round 1.' +
+            '</div>';
+  }
+
   document.getElementById('panel-predict').innerHTML=html;
 
   // Stats bar
-  var total=104;
-  document.getElementById('s-filled').textContent=filled;
+  var r2Filled = 0;
+  if (tournamentState.round2_open) {
+    r2Filled = KO_MATCHES.filter(function(m){
+      var p = myPredsR2[m.id];
+      return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
+    }).length;
+  }
+  var totalR1=104;
+  document.getElementById('s-filled').textContent = filled + (r2Filled ? ' + ' + r2Filled : '');
   document.getElementById('s-pts').textContent=pts>0?fmtPts(pts):'-';
-  var pct=Math.round(filled/total*100);
+  var pct=Math.round(filled/totalR1*100);
   document.getElementById('prog-fill').style.width=pct+'%';
-  document.getElementById('prog-text').textContent=filled+' / '+total+' predictions entered';
+  document.getElementById('prog-text').textContent = filled + ' / 104 Round 1' +
+    (tournamentState.round2_open ? ' · ' + r2Filled + ' / 32 Round 2' : '');
   document.getElementById('viewer-prog').style.display='';
+}
+
+// ─────────────────────────────────────────────────────────────
+// ROUND 2 SECTION — renders the official knockout bracket
+// using the real results from `allResults` (not the user's
+// Round 1 predictions). User makes a FRESH set of picks here.
+// ─────────────────────────────────────────────────────────────
+function renderRound2Section(isMe) {
+  // Compute the official bracket from real results (admin-entered)
+  // by feeding allResults to bracket.js (which expects {a,b,w} shape)
+  var resultsAsPreds = {};
+  Object.keys(allResults).forEach(function(id){
+    var r = allResults[id];
+    if (r && r.goals_a !== null && r.goals_b !== null) {
+      // For knockout, the actual winner column on results is from admin-entered
+      resultsAsPreds[id] = { a: r.goals_a, b: r.goals_b, w: r.winner || null };
+    }
+  });
+  var officialBracket = buildBracket(resultsAsPreds);
+
+  // Use Round 2 predictions for what the user submitted
+  var preds = isMe ? myPredsR2 : viewedPredsR2;
+
+  var html = '';
+  // Header banner explaining Round 2
+  html += '<div style="background:linear-gradient(135deg,#1a7a4a 0%,#0d4a2a 100%);color:#fff;padding:14px 18px;margin:24px 14px 0;border-radius:8px">' +
+            '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">🏆 ROUND 2 — Official Knockouts</div>' +
+            '<div style="font-size:13px;line-height:1.5;opacity:.95">' +
+              'The real Round of 32 is set. Make fresh predictions for the official matchups — these score independently and stack on top of Round 1.' +
+            '</div>' +
+          '</div>';
+
+  var stages = ['r32','r16','qf','sf','3rd','final'];
+  stages.forEach(function(stage) {
+    var ms = KO_MATCHES.filter(function(m){return m.stage===stage;}).sort(function(a,b){return a.s-b.s;});
+    if (!ms.length) return;
+
+    html += '<div class="stage-hdr" style="background:linear-gradient(90deg,#1a7a4a 0%,#0d4a2a 100%)"><span class="stage-hdr-title">R2: '+STAGE_LABELS[stage]+'</span>';
+    if (STAGE_DATES[stage]) html += '<span class="stage-hdr-sub">'+STAGE_DATES[stage]+'</span>';
+    html += '</div>';
+
+    ms.forEach(function(m) {
+      var pred = preds[m.id] || null;
+      var res = allResults[m.id] || null;
+      var locked = isLocked(m.ko);
+      var pa = pred ? pred.a : null;
+      var pb = pred ? pred.b : null;
+      var pw = pred ? pred.w : '';
+      var hasPred = pa !== null && pb !== null;
+      var bp = (hasPred && res) ? scoreP(pa, pb, res.goals_a, res.goals_b) : null;
+      var fp = bp !== null ? Number(bp) : null;
+      var rc = 'ko-match-row' + (bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
+      var canEdit = isMe && !locked;
+      var dis = canEdit ? '' : ' disabled';
+      var ev = canEdit ? ' oninput="onR2KoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"' : '';
+
+      // Real team names from official bracket (or result if entered)
+      var brTeams = officialBracket.koTeams[m.id] || {};
+      var teamA = res && res.team_a ? res.team_a : (brTeams.a || m.a);
+      var teamB = res && res.team_b ? res.team_b : (brTeams.b || m.b);
+
+      html += '<div class="'+rc+'" data-mid="'+m.id+'-r2">';
+      html += '<div class="team home">'+esc(teamA)+'</div>';
+      html += '<div class="ko-sc-cell">';
+      html += '<div class="ko-main-row">';
+      html += '<input type="number" min="0" max="20" value="'+(pa!==null?pa:'')+'" class="s-inp'+(pa!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="a"'+dis+ev+'>';
+      html += '<span class="sep">:</span>';
+      html += '<input type="number" min="0" max="20" value="'+(pb!==null?pb:'')+'" class="s-inp'+(pb!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="b"'+dis+ev+'>';
+      if (res) html += '<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
+      if (fp !== null) html += '<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
+      if (locked && !res) html += '<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
+      if (savingSet['r2_'+m.id]) html += '<span class="sv-dot"></span>';
+      html += '</div>';
+      if (hasPred && pa === pb) {
+        if (canEdit) {
+          html += '<div class="ko-winner-row">After extra time: ';
+          html += '<select class="winner-sel" onchange="onR2KoWinner(\''+m.id+'\',this.value)">';
+          html += '<option value="">Pick winner</option>';
+          html += '<option value="A"'+(pw==='A'?' selected':'')+'>'+esc(teamA)+'</option>';
+          html += '<option value="B"'+(pw==='B'?' selected':'')+'>'+esc(teamB)+'</option>';
+          html += '</select></div>';
+        } else if (pw) {
+          html += '<div class="ko-winner-row"><span class="winner-locked">→ '+esc(pw==='A'?teamA:teamB)+'</span></div>';
+        }
+      }
+      html += '<div class="kickoff-time">'+fmtKO(m.ko)+'</div>';
+      html += '</div>';
+      html += '<div class="team">'+esc(teamB)+'</div>';
+      html += '</div>';
+    });
+
+    if (isMe) {
+      html += '<div class="round-save-bar">';
+      html += '<span class="round-save-status" id="status-r2-'+stage+'"></span>';
+      html += '<button class="btn-round-save" id="btn-save-r2-'+stage+'" onclick="saveR2Round(\''+stage+'\')">Save R2 '+STAGE_LABELS[stage].toLowerCase()+'</button>';
+      html += '</div>';
+    }
+  });
+
+  return html;
+}
+
+// ─── Round 2 save handlers ───────────────────────────────────────────────
+function onR2KoInp(matchId, rowEl) {
+  var aEl = rowEl.querySelector('[data-side="a"]');
+  var bEl = rowEl.querySelector('[data-side="b"]');
+  var a = aEl.value !== '' ? parseInt(aEl.value, 10) : null;
+  var b = bEl.value !== '' ? parseInt(bEl.value, 10) : null;
+  aEl.classList.toggle('filled', aEl.value !== '');
+  bEl.classList.toggle('filled', bEl.value !== '');
+  if (a === null || b === null) return;
+  var existing = myPredsR2[matchId] || {};
+  clearTimeout(saveTimers['r2_'+matchId]);
+  savingSet['r2_'+matchId] = true;
+  saveTimers['r2_'+matchId] = setTimeout(function() {
+    sb.from('predictions').upsert(
+      {user_id:me.id, match_id:matchId, goals_a:a, goals_b:b, winner:existing.w||null, round:2, updated_at:new Date().toISOString()},
+      {onConflict:'user_id,match_id,round'}
+    ).then(function(r) {
+      delete savingSet['r2_'+matchId];
+      if (r.error) { toast('Save failed', 'err'); return; }
+      myPredsR2[matchId] = {a:a, b:b, w:existing.w||null};
+      renderPredict(); // re-render to show/hide winner dropdown
+    });
+  }, 800);
+}
+
+function onR2KoWinner(matchId, winner) {
+  var existing = myPredsR2[matchId] || {};
+  sb.from('predictions').upsert(
+    {user_id:me.id, match_id:matchId, goals_a:existing.a, goals_b:existing.b, winner:winner, round:2, updated_at:new Date().toISOString()},
+    {onConflict:'user_id,match_id,round'}
+  ).then(function(r) {
+    if (r.error) { toast('Save failed', 'err'); return; }
+    myPredsR2[matchId] = {a:existing.a, b:existing.b, w:winner};
+    toast('R2 winner saved', 'ok');
+  });
+}
+
+function saveR2Round(stage) {
+  var ids = KO_MATCHES.filter(function(m){return m.stage===stage;}).map(function(m){return m.id;});
+  var btn = document.getElementById('btn-save-r2-'+stage);
+  var status = document.getElementById('status-r2-'+stage);
+
+  ids.forEach(function(id) {
+    if (saveTimers['r2_'+id]) { clearTimeout(saveTimers['r2_'+id]); delete saveTimers['r2_'+id]; }
+  });
+
+  var payload = [];
+  var incomplete = 0;
+  ids.forEach(function(id) {
+    var row = document.querySelector('#panel-predict [data-mid="'+id+'-r2"]');
+    if (!row) return;
+    var aEl = row.querySelector('[data-side="a"]');
+    var bEl = row.querySelector('[data-side="b"]');
+    if (!aEl || !bEl) return;
+    var a = aEl.value !== '' ? parseInt(aEl.value, 10) : null;
+    var b = bEl.value !== '' ? parseInt(bEl.value, 10) : null;
+    if (a !== null && b !== null && !isNaN(a) && !isNaN(b)) {
+      var w = (myPredsR2[id] && myPredsR2[id].w) ? myPredsR2[id].w : null;
+      payload.push({user_id:me.id, match_id:id, goals_a:a, goals_b:b, winner:w, round:2, updated_at:new Date().toISOString()});
+    } else {
+      incomplete++;
+    }
+  });
+
+  if (!payload.length) {
+    if (status) { status.className='round-save-status'; status.textContent='Nothing to save yet.'; }
+    return;
+  }
+
+  if (btn) { btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Saving...'; }
+  if (status) { status.className='round-save-status pending'; status.textContent='Saving '+payload.length+'...'; }
+
+  sb.from('predictions').upsert(payload, {onConflict:'user_id,match_id,round'}).then(function(r) {
+    if (btn) { btn.disabled=false; btn.textContent='Save R2 '+STAGE_LABELS[stage].toLowerCase(); }
+    if (r.error) {
+      if (status) { status.className='round-save-status'; status.style.color='var(--red)'; status.textContent='Save failed: '+r.error.message; }
+      toast('Save failed', 'err');
+      return;
+    }
+    payload.forEach(function(p){ myPredsR2[p.match_id] = {a:p.goals_a, b:p.goals_b, w:p.winner}; });
+    var msg = payload.length + ' R2 saved';
+    if (incomplete > 0) msg += ' · ' + incomplete + ' still blank';
+    if (status) { status.className='round-save-status ok'; status.style.color=''; status.textContent='✓ '+msg; }
+    toast('R2 round saved ('+payload.length+')', 'ok');
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -365,8 +585,8 @@ function onInp(matchId,rowEl){
   savingSet[matchId]=true;
   saveTimers[matchId]=setTimeout(function(){
     sb.from('predictions').upsert(
-      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,updated_at:new Date().toISOString()},
-      {onConflict:'user_id,match_id'}
+      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,round:1,updated_at:new Date().toISOString()},
+      {onConflict:'user_id,match_id,round'}
     ).then(function(r){
       delete savingSet[matchId];
       if(r.error){toast('Save failed','err');return;}
@@ -391,8 +611,8 @@ function onKoInp(matchId,rowEl){
   savingSet[matchId]=true;
   saveTimers['ko_'+matchId]=setTimeout(function(){
     sb.from('predictions').upsert(
-      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,winner:existing.w||null,updated_at:new Date().toISOString()},
-      {onConflict:'user_id,match_id'}
+      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,winner:existing.w||null,round:1,updated_at:new Date().toISOString()},
+      {onConflict:'user_id,match_id,round'}
     ).then(function(r){
       delete savingSet[matchId];
       if(r.error){toast('Save failed','err');return;}
@@ -405,8 +625,8 @@ function onKoInp(matchId,rowEl){
 function onKoWinner(matchId,winner){
   var existing=myPreds[matchId]||{};
   sb.from('predictions').upsert(
-    {user_id:me.id,match_id:matchId,goals_a:existing.a,goals_b:existing.b,winner:winner,updated_at:new Date().toISOString()},
-    {onConflict:'user_id,match_id'}
+    {user_id:me.id,match_id:matchId,goals_a:existing.a,goals_b:existing.b,winner:winner,round:1,updated_at:new Date().toISOString()},
+    {onConflict:'user_id,match_id,round'}
   ).then(function(r){
     if(r.error){toast('Save failed','err');return;}
     myPreds[matchId]={a:existing.a,b:existing.b,w:winner};
@@ -450,7 +670,7 @@ function saveRound(stage){
     if(a!==null&&b!==null&&!isNaN(a)&&!isNaN(b)){
       // preserve any AET winner already chosen
       var w=(myPreds[id]&&myPreds[id].w)?myPreds[id].w:null;
-      payload.push({user_id:me.id,match_id:id,goals_a:a,goals_b:b,winner:w,updated_at:new Date().toISOString()});
+      payload.push({user_id:me.id,match_id:id,goals_a:a,goals_b:b,winner:w,round:1,updated_at:new Date().toISOString()});
     } else {
       incomplete++;
     }
@@ -464,7 +684,7 @@ function saveRound(stage){
   if(btn){btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Saving...';}
   if(status){status.className='round-save-status pending';status.textContent='Saving '+payload.length+' prediction'+(payload.length===1?'':'s')+'...';}
 
-  sb.from('predictions').upsert(payload,{onConflict:'user_id,match_id'}).then(function(r){
+  sb.from('predictions').upsert(payload,{onConflict:'user_id,match_id,round'}).then(function(r){
     if(btn){btn.disabled=false;btn.textContent='Save '+(stage==='group'?'group stage':STAGE_LABELS[stage].toLowerCase());}
     if(r.error){
       if(status){status.className='round-save-status';status.style.color='var(--red)';status.textContent='Save failed: '+r.error.message;}
@@ -695,9 +915,14 @@ function selectUser(uid,name){
   viewedUid=uid;
   document.getElementById('viewer-name').textContent=name;
   document.getElementById('panel-predict').innerHTML='<div class="panel-load"><div class="spinner"></div> Loading predictions...</div>';
-  sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).then(function(r){
+  Promise.all([
+    sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).eq('round',1),
+    sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).eq('round',2)
+  ]).then(function(rs){
     viewedPreds={};
-    (r.data||[]).forEach(function(p){viewedPreds[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
+    (rs[0].data||[]).forEach(function(p){viewedPreds[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
+    viewedPredsR2={};
+    (rs[1].data||[]).forEach(function(p){viewedPredsR2[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
     renderPredict();
   });
 }
@@ -822,13 +1047,18 @@ function enterKoResult(matchId,teamA,teamB){
 function renderRules(){
   document.getElementById('panel-rules').innerHTML=[
     '<div class="rules-wrap">',
-    '<div class="rules-sec"><h3>Kicktipp Scoring — all 104 matches</h3>',
+    '<div class="rules-sec"><h3>Two prediction rounds</h3>',
+    '<p class="rules-note"><strong>Round 1</strong> — before the tournament. Predict all 104 matches (48 group + 56 knockout). Your knockout picks are scored against the bracket YOU predicted from group standings.</p>',
+    '<p class="rules-note"><strong>Round 2</strong> — opens automatically once all 72 real group-stage results are entered. Make fresh predictions for the official Round of 32 onwards. Round 2 picks are scored against the real matchups. <strong>Both rounds stack toward your total.</strong></p></div>',
+    '<div class="rules-sec"><h3>Kicktipp Scoring — every match</h3>',
     '<table class="rt"><thead><tr><th>What you get right</th><th>Points</th><th>Example</th></tr></thead><tbody>',
     '<tr><td><strong>Exact scoreline</strong></td><td><span class="bdg" style="background:#2ecc71">4</span></td><td style="color:#999">Predict 2-1, result 2-1</td></tr>',
     '<tr><td><strong>Correct goal difference</strong></td><td><span class="bdg" style="background:var(--gold)">3</span></td><td style="color:#999">Predict 2-0, result 3-1</td></tr>',
     '<tr><td><strong>Correct tendency (W/D/L)</strong></td><td><span class="bdg" style="background:#e67e22">2</span></td><td style="color:#999">Predict 2-0, result 3-0 (different GD)</td></tr>',
     '<tr><td><strong>Wrong tendency</strong></td><td><span class="bdg" style="background:#bdc3c7">0</span></td><td style="color:#999">Predict 1-0, result 0-1</td></tr>',
     '</tbody></table></div>',
+    '<div class="rules-sec"><h3>When do points appear on the leaderboard?</h3>',
+    '<p class="rules-note">Results are entered as matches finish, but they don\'t show on the leaderboard immediately. Instead, all points from a given day drop together <strong>at midnight Pacific Time</strong> (Los Angeles). So if matches happen across June 14 (LA time), those points appear on June 15. This keeps the standings clean and avoids constant live updates during games.</p></div>',
     '<div class="rules-sec"><h3>Contrarian Multiplier</h3>',
     '<p class="rules-note">After kickoff, points are multiplied based on how many players picked the same winner. Going against the majority and being right earns extra points.</p>',
     '<table class="rt"><thead><tr><th>% who picked the winning tendency</th><th>Multiplier</th></tr></thead><tbody>',
@@ -840,11 +1070,11 @@ function renderRules(){
     '<div class="rules-sec"><h3>Knockout Rounds</h3>',
     '<p class="rules-note">Predict the scoreline after 90 minutes for every knockout match. If you predict a draw, a dropdown appears to pick who you think wins after extra time / penalties. This counts as a bonus tiebreaker but does <strong>not</strong> affect your 4/3/2/0 score (which is always based on 90 minutes).</p></div>',
     '<div class="rules-sec"><h3>Prediction Lock</h3>',
-    '<p class="rules-note">All inputs lock automatically at the scheduled kickoff time. Other players\' predictions become visible after kickoff.</p></div>',
+    '<p class="rules-note">All inputs lock automatically at scheduled kickoff. League-mates can see each other\'s picks anytime; users outside your league can\'t.</p></div>',
     '<div class="rules-sec"><h3>Tiebreaker</h3>',
     '<p class="rules-note">Equal points → most exact scores wins. Still tied → most correct goal differences.</p></div>',
-    '<div class="rules-sec"><h3>Groups</h3>',
-    '<p class="rules-note">Create a private group and share the 6-letter join code. You appear on both your group leaderboard and the global leaderboard. Groups support 2–20 players.</p></div>',
+    '<div class="rules-sec"><h3>Leagues</h3>',
+    '<p class="rules-note">Create a private league and share the 6-letter join code with friends. You appear on both your league\'s leaderboard and the global leaderboard. Leagues support 2–20 players.</p></div>',
     '</div>'
   ].join('');
 }
