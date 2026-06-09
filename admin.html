@@ -143,13 +143,30 @@ function initAdmin() {
 }
 
 function loadAllPlayers() {
-  // Supabase defaults to 1000 rows. 48 teams × 26 = 1248, so we explicitly request more.
-  sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').range(0, 4999).then(function(r) {
-    if (r.error) { toast('Failed to load players: ' + r.error.message, 'err'); return; }
-    allPlayers = r.data || [];
-    renderRostersList();
-    renderAwardPickers();
-  });
+  // Paginate to avoid Supabase's max-rows cap (default 1000).
+  allPlayers = [];
+  var PAGE = 1000;
+
+  function fetchPage(offset) {
+    sb.from('players').select('id,team,name,position,jersey_num')
+      .order('team').order('name')
+      .range(offset, offset + PAGE - 1)
+      .then(function(r) {
+        if (r.error) { toast('Failed to load players: ' + r.error.message, 'err'); return; }
+        var batch = r.data || [];
+        allPlayers = allPlayers.concat(batch);
+        if (batch.length === PAGE) {
+          // There might be more — fetch the next page
+          fetchPage(offset + PAGE);
+        } else {
+          // Done
+          renderRostersList();
+          renderAwardPickers();
+        }
+      });
+  }
+
+  fetchPage(0);
 }
 
 function renderRostersList() {
