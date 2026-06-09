@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WC 2026 Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  body { padding: 0; }
+  .admin-wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 80px; }
+  .admin-header { background: var(--navy); color: #fff; padding: 16px 20px; margin: -24px -20px 24px; display: flex; justify-content: space-between; align-items: center; }
+  .admin-header h1 { font-family: var(--fh); font-size: 22px; font-weight: 900; letter-spacing: .5px; }
+  .admin-card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
+  .admin-card h2 { font-family: var(--fh); font-size: 16px; font-weight: 700; color: var(--navy); margin-bottom: 12px; letter-spacing: .3px; }
+  .admin-card p.muted { font-size: 13px; color: var(--muted); margin-bottom: 12px; line-height: 1.5; }
+  .admin-section-help { background: #f8f9fc; border-left: 3px solid var(--blue); padding: 10px 14px; font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 14px; border-radius: 4px; }
+  .admin-section-help code { background: #fff; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: var(--navy); }
+  textarea.roster-input { width: 100%; min-height: 200px; padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 7px; font-family: 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; outline: none; resize: vertical; }
+  textarea.roster-input:focus { border-color: var(--blue); }
+  .admin-row { display: grid; grid-template-columns: 200px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f2f6; font-size: 13px; }
+  .admin-row:last-child { border-bottom: none; }
+  .team-name { font-family: var(--fh); font-weight: 700; color: var(--navy); }
+  .team-count { color: var(--muted); }
+  .btn-primary { font-family: var(--fh); font-size: 13px; font-weight: 700; padding: 8px 18px; background: var(--navy); color: #fff; border: none; border-radius: 7px; cursor: pointer; }
+  .btn-primary:hover { background: var(--navy2); }
+  .btn-danger { font-size: 12px; padding: 4px 10px; background: #fff; color: var(--red); border: 1px solid var(--red); border-radius: 5px; cursor: pointer; }
+  .award-row { display: grid; grid-template-columns: 180px 1fr auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #f0f2f6; }
+  .award-row:last-child { border-bottom: none; }
+  select.player-pick { width: 100%; padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 6px; font-size: 13px; outline: none; background: #fff; }
+  #not-admin-msg { display: none; max-width: 460px; margin: 80px auto; padding: 28px; background: #fff; border-radius: 12px; box-shadow: var(--shadow-lg); text-align: center; }
+  .back-link { color: rgba(255,255,255,.7); font-size: 12px; }
+  .back-link:hover { color: #fff; }
+</style>
+</head>
+<body>
+
+<div id="screen-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:12px;color:var(--muted)">
+  <div class="spinner"></div>
+  <span style="font-size:13px">Loading...</span>
+</div>
+
+<div id="not-admin-msg">
+  <div style="font-size:42px;margin-bottom:12px">🔒</div>
+  <h2 style="font-family:var(--fh);color:var(--navy);margin-bottom:10px">Admins only</h2>
+  <p style="color:var(--muted);font-size:14px;line-height:1.6">This page is restricted to admin accounts.</p>
+  <p style="margin-top:20px"><a href="index.html" style="color:var(--blue);font-weight:600">← Back to site</a></p>
+</div>
+
+<div id="admin-main" style="display:none">
+  <div class="admin-header">
+    <h1>WC 2026 Admin</h1>
+    <a href="index.html" class="back-link">← Back to site</a>
+  </div>
+  <div class="admin-wrap">
+
+    <!-- ROSTER PASTE-IN -->
+    <div class="admin-card">
+      <h2>📋 Squad Rosters</h2>
+      <p class="muted">Paste a country's full squad below. Players already in the database for that team will be replaced.</p>
+      <div class="admin-section-help">
+        <strong>Format:</strong> one player per line. Each line: <code>name | position | jersey_num</code><br>
+        Position and jersey are optional. Position values: <code>GK</code>, <code>DF</code>, <code>MF</code>, <code>FW</code>.<br>
+        <strong>Example:</strong><br>
+        <code>Cristiano Ronaldo | FW | 7</code><br>
+        <code>Diogo Costa | GK | 22</code><br>
+        <code>Bruno Fernandes | MF | 8</code>
+      </div>
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.3px">Team</label>
+      <select id="roster-team" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:7px;font-size:14px;margin-bottom:10px;background:#fff">
+        <option value="">— Pick a team —</option>
+      </select>
+      <textarea id="roster-input" class="roster-input" placeholder="Cristiano Ronaldo | FW | 7&#10;Bruno Fernandes | MF | 8&#10;..."></textarea>
+      <div style="margin-top:10px;text-align:right">
+        <button class="btn-primary" onclick="saveRoster()">Save squad</button>
+      </div>
+    </div>
+
+    <!-- CURRENT ROSTERS -->
+    <div class="admin-card">
+      <h2>Current Squads</h2>
+      <div id="rosters-list"><div class="panel-load"><div class="spinner"></div> Loading...</div></div>
+    </div>
+
+    <!-- AWARD WINNERS -->
+    <div class="admin-card">
+      <h2>🏆 Award Winners</h2>
+      <p class="muted">Enter the actual winners after the tournament finishes. Each player who picked correctly gets 8 points.</p>
+      <div id="award-results-list"></div>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script>
+// All teams from data.js
+var ALL_TEAMS = [];
+Object.keys(GROUP_TEAMS).forEach(function(g){
+  GROUP_TEAMS[g].forEach(function(t){ ALL_TEAMS.push(t); });
+});
+ALL_TEAMS.sort();
+
+var allPlayers = [];
+var awardResultsCurrent = {};
+
+function toast(msg, type) {
+  var el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg; el.className = ''; if (type) el.classList.add(type); el.classList.add('show');
+  setTimeout(function(){ el.classList.remove('show'); }, 3000);
+}
+
+// Boot
+sb.auth.getSession().then(function(s) {
+  if (!s.data.session) { window.location.href = 'index.html'; return; }
+  sb.from('profiles').select('is_admin').eq('id', s.data.session.user.id).single().then(function(r) {
+    document.getElementById('screen-loading').style.display = 'none';
+    if (!r.data || !r.data.is_admin) {
+      document.getElementById('not-admin-msg').style.display = 'block';
+      return;
+    }
+    document.getElementById('admin-main').style.display = 'block';
+    initAdmin();
+  });
+});
+
+function initAdmin() {
+  // Populate team picker
+  var sel = document.getElementById('roster-team');
+  ALL_TEAMS.forEach(function(t){
+    var opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  });
+  loadAllPlayers();
+  loadAwardResults();
+}
+
+function loadAllPlayers() {
+  sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').then(function(r) {
+    allPlayers = r.data || [];
+    renderRostersList();
+    renderAwardPickers();
+  });
+}
+
+function renderRostersList() {
+  var byTeam = {};
+  ALL_TEAMS.forEach(function(t){ byTeam[t] = []; });
+  allPlayers.forEach(function(p){
+    if (!byTeam[p.team]) byTeam[p.team] = [];
+    byTeam[p.team].push(p);
+  });
+  var html = '';
+  ALL_TEAMS.forEach(function(t){
+    var ps = byTeam[t] || [];
+    var status = ps.length === 0 ? '<span style="color:var(--red)">empty</span>' :
+                 ps.length === 26 ? '<span style="color:var(--green)">✓ 26 players</span>' :
+                 '<span style="color:var(--gold)">'+ps.length+' players</span>';
+    html += '<div class="admin-row">';
+    html += '<div class="team-name">'+t+'</div>';
+    html += '<div class="team-count">'+status+'</div>';
+    html += '<div>';
+    if (ps.length > 0) {
+      html += '<button class="btn-danger" onclick="clearRoster(\''+t.replace(/'/g,"\\'")+'\')">Clear</button>';
+    }
+    html += '</div></div>';
+  });
+  document.getElementById('rosters-list').innerHTML = html;
+}
+
+function saveRoster() {
+  var team = document.getElementById('roster-team').value;
+  var text = document.getElementById('roster-input').value.trim();
+  if (!team) { toast('Pick a team first', 'err'); return; }
+  if (!text) { toast('Paste some players first', 'err'); return; }
+
+  // Parse lines
+  var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  var rows = [];
+  var errors = [];
+  lines.forEach(function(line, i){
+    var parts = line.split('|').map(function(p){ return p.trim(); });
+    if (!parts[0]) { errors.push('Line '+(i+1)+': empty name'); return; }
+    var row = { team: team, name: parts[0] };
+    if (parts[1]) {
+      var pos = parts[1].toUpperCase();
+      if (['GK','DF','MF','FW'].indexOf(pos) < 0) { errors.push('Line '+(i+1)+': bad position "'+parts[1]+'"'); return; }
+      row.position = pos;
+    }
+    if (parts[2]) {
+      var num = parseInt(parts[2], 10);
+      if (isNaN(num) || num < 1 || num > 99) { errors.push('Line '+(i+1)+': bad jersey "'+parts[2]+'"'); return; }
+      row.jersey_num = num;
+    }
+    rows.push(row);
+  });
+  if (errors.length) { toast('Parse errors: ' + errors[0], 'err'); return; }
+  if (!rows.length) { toast('No valid rows', 'err'); return; }
+
+  // Delete old roster for this team, then insert new
+  sb.from('players').delete().eq('team', team).then(function(r) {
+    if (r.error) { toast('Delete failed: ' + r.error.message, 'err'); return; }
+    sb.from('players').insert(rows).then(function(r2) {
+      if (r2.error) { toast('Insert failed: ' + r2.error.message, 'err'); return; }
+      toast('Saved ' + rows.length + ' players for ' + team, 'ok');
+      document.getElementById('roster-input').value = '';
+      loadAllPlayers();
+    });
+  });
+}
+
+function clearRoster(team) {
+  if (!confirm('Clear all players for ' + team + '?')) return;
+  sb.from('players').delete().eq('team', team).then(function(r) {
+    if (r.error) { toast('Failed', 'err'); return; }
+    toast('Cleared ' + team, 'ok');
+    loadAllPlayers();
+  });
+}
+
+function loadAwardResults() {
+  sb.from('award_results').select('award,player_id').then(function(r) {
+    awardResultsCurrent = {};
+    (r.data || []).forEach(function(row){ awardResultsCurrent[row.award] = row.player_id; });
+    renderAwardPickers();
+  });
+}
+
+function renderAwardPickers() {
+  var awards = [
+    {key:'golden_ball', label:'Golden Ball', filter:null},
+    {key:'golden_boot', label:'Golden Boot', filter:null},
+    {key:'golden_glove', label:'Golden Glove', filter:'GK'}
+  ];
+  var html = '';
+  awards.forEach(function(a){
+    var filtered = a.filter ? allPlayers.filter(function(p){return p.position===a.filter;}) : allPlayers;
+    var current = awardResultsCurrent[a.key] || '';
+    var picked = current ? allPlayers.find(function(p){return p.id===current;}) : null;
+    html += '<div class="award-row">';
+    html += '<div style="font-family:var(--fh);font-weight:700;color:var(--navy)">'+a.label+'</div>';
+    var byTeam = {};
+    filtered.forEach(function(p){ if(!byTeam[p.team]) byTeam[p.team]=[]; byTeam[p.team].push(p); });
+    var teamNames = Object.keys(byTeam).sort();
+    html += '<div><select class="player-pick" onchange="saveAwardResult(\''+a.key+'\', this.value)">';
+    html += '<option value="">— Not yet announced —</option>';
+    teamNames.forEach(function(t){
+      html += '<optgroup label="'+t+'">';
+      byTeam[t].forEach(function(p){
+        html += '<option value="'+p.id+'"'+(p.id===current?' selected':'')+'>'+p.name+(p.jersey_num?' #'+p.jersey_num:'')+'</option>';
+      });
+      html += '</optgroup>';
+    });
+    html += '</select></div>';
+    html += '<div style="font-size:12px;color:var(--muted)">'+(picked ? '✓ '+picked.team : '—')+'</div>';
+    html += '</div>';
+  });
+  document.getElementById('award-results-list').innerHTML = html;
+}
+
+function saveAwardResult(award, playerId) {
+  if (!playerId) {
+    sb.from('award_results').delete().eq('award', award).then(function(r) {
+      if (r.error) { toast('Failed', 'err'); return; }
+      delete awardResultsCurrent[award];
+      toast('Cleared ' + award, 'ok');
+      renderAwardPickers();
+    });
+    return;
+  }
+  sb.auth.getSession().then(function(s){
+    sb.from('award_results').upsert({
+      award: award, player_id: playerId,
+      entered_by: s.data.session.user.id, entered_at: new Date().toISOString()
+    }, {onConflict: 'award'}).then(function(r) {
+      if (r.error) { toast('Save failed: ' + r.error.message, 'err'); return; }
+      awardResultsCurrent[award] = playerId;
+      toast(award + ' saved', 'ok');
+      renderAwardPickers();
+    });
+  });
+}
+</script>
+</body>
+</html>
