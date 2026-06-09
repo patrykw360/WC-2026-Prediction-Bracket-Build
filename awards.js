@@ -28,7 +28,7 @@ function loadAwards() {
     '<div class="panel-load"><div class="spinner"></div> Loading awards...</div>';
 
   Promise.all([
-    sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name'),
+    sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').range(0, 4999),
     sb.from('award_predictions').select('award,player_id').eq('user_id', me.id),
     sb.from('award_results').select('award,player_id')
   ]).then(function(rs) {
