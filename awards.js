@@ -29,12 +29,31 @@ function loadAwards() {
   document.getElementById('panel-awards').innerHTML =
     '<div class="panel-load"><div class="spinner"></div> Loading awards...</div>';
 
+  // Fetch players paginated (Supabase caps at 1000 rows per query by default)
+  function fetchAllPlayers() {
+    var PAGE = 1000;
+    var collected = [];
+    function next(offset) {
+      return sb.from('players').select('id,team,name,position,jersey_num')
+        .order('team').order('name')
+        .range(offset, offset + PAGE - 1)
+        .then(function(r) {
+          if (r.error) throw r.error;
+          var batch = r.data || [];
+          collected = collected.concat(batch);
+          if (batch.length === PAGE) return next(offset + PAGE);
+          return collected;
+        });
+    }
+    return next(0);
+  }
+
   Promise.all([
-    sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').range(0, 4999),
+    fetchAllPlayers(),
     sb.from('award_predictions').select('award,player_id').eq('user_id', me.id),
     sb.from('award_results').select('award,player_id')
   ]).then(function(rs) {
-    awardsState.players = rs[0].data || [];
+    awardsState.players = rs[0] || [];
     awardsState.predictions = {};
     (rs[1].data || []).forEach(function(p) { awardsState.predictions[p.award] = p.player_id; });
     awardsState.results = {};
