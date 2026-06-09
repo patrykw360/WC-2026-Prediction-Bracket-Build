@@ -143,7 +143,9 @@ function initAdmin() {
 }
 
 function loadAllPlayers() {
-  sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').then(function(r) {
+  // Supabase defaults to 1000 rows. 48 teams × 26 = 1248, so we explicitly request more.
+  sb.from('players').select('id,team,name,position,jersey_num').order('team').order('name').range(0, 4999).then(function(r) {
+    if (r.error) { toast('Failed to load players: ' + r.error.message, 'err'); return; }
     allPlayers = r.data || [];
     renderRostersList();
     renderAwardPickers();
@@ -185,10 +187,27 @@ function saveRoster() {
   var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
   var rows = [];
   var errors = [];
+  var seenNames = {};
+  var duplicatesInPaste = [];
+
   lines.forEach(function(line, i){
     var parts = line.split('|').map(function(p){ return p.trim(); });
-    if (!parts[0]) { errors.push('Line '+(i+1)+': empty name'); return; }
-    var row = { team: team, name: parts[0] };
+    var rawName = parts[0];
+    if (!rawName) { errors.push('Line '+(i+1)+': empty name'); return; }
+
+    // Normalise: collapse multiple spaces, remove invisible chars
+    var name = rawName.replace(/\s+/g, ' ').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    if (!name) { errors.push('Line '+(i+1)+': empty name after cleaning'); return; }
+
+    // Deduplicate inside the paste (case-insensitive)
+    var key = name.toLowerCase();
+    if (seenNames[key]) {
+      duplicatesInPaste.push('Line '+(i+1)+': "'+name+'" duplicates Line '+seenNames[key]);
+      return;
+    }
+    seenNames[key] = i+1;
+
+    var row = { team: team, name: name };
     if (parts[1]) {
       var pos = parts[1].toUpperCase();
       if (['GK','DF','MF','FW'].indexOf(pos) < 0) { errors.push('Line '+(i+1)+': bad position "'+parts[1]+'"'); return; }
@@ -201,17 +220,54 @@ function saveRoster() {
     }
     rows.push(row);
   });
-  if (errors.length) { toast('Parse errors: ' + errors[0], 'err'); return; }
+
+  // Surface duplicates and parse errors clearly
+  if (duplicatesInPaste.length) {
+    var msg = 'Found '+duplicatesInPaste.length+' duplicate name'+(duplicatesInPaste.length===1?'':'s')+' in your paste:\n\n' +
+              duplicatesInPaste.join('\n') +
+              '\n\nFix the duplicates and paste again. Duplicates are silently rejected by the database.';
+    alert(msg);
+    return;
+  }
+  if (errors.length) {
+    alert('Parse errors:\n\n' + errors.join('\n'));
+    return;
+  }
   if (!rows.length) { toast('No valid rows', 'err'); return; }
+
+  // Disable the button while saving so user knows something is happening
+  var btn = document.querySelector('.admin-card .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
   // Delete old roster for this team, then insert new
   sb.from('players').delete().eq('team', team).then(function(r) {
-    if (r.error) { toast('Delete failed: ' + r.error.message, 'err'); return; }
-    sb.from('players').insert(rows).then(function(r2) {
-      if (r2.error) { toast('Insert failed: ' + r2.error.message, 'err'); return; }
-      toast('Saved ' + rows.length + ' players for ' + team, 'ok');
-      document.getElementById('roster-input').value = '';
-      loadAllPlayers();
+    if (r.error) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save squad'; }
+      alert('Delete failed: ' + r.error.message);
+      return;
+    }
+    // Insert in chunks to stay well under any payload limits
+    sb.from('players').insert(rows).select('id').then(function(r2) {
+      if (r2.error) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save squad'; }
+        // Show the real error in an alert so it can't be missed
+        alert('Insert failed:\n\n' + r2.error.message + '\n\nDetails: ' + (r2.error.details || 'none') + '\nHint: ' + (r2.error.hint || 'none'));
+        return;
+      }
+      // VERIFY: count what's actually in the DB now for this team
+      sb.from('players').select('id', {count: 'exact', head: true}).eq('team', team).then(function(r3) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save squad'; }
+        var actualCount = r3.count;
+        var expectedCount = rows.length;
+        if (actualCount !== expectedCount) {
+          alert('⚠️ Mismatch!\n\nExpected to save: ' + expectedCount + '\nActually in DB:   ' + actualCount +
+                '\n\nThis usually means there are duplicate names that PostgreSQL rejected, or some rows failed validation. Check the squad list at the bottom of this page to see what actually saved.');
+        } else {
+          toast('✓ ' + actualCount + ' players saved for ' + team, 'ok');
+          document.getElementById('roster-input').value = '';
+        }
+        loadAllPlayers();
+      });
     });
   });
 }
