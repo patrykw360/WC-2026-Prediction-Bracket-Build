@@ -49,6 +49,7 @@
       <div class="tab-bar">
         <div class="tab active" data-tab="predict" onclick="switchTab(this)">My Predictions</div>
         <div class="tab" data-tab="leaderboard" onclick="switchTab(this)">Standings</div>
+        <div class="tab" data-tab="awards" onclick="switchTab(this)">🏆 Awards</div>
         <div class="tab" data-tab="groups" onclick="switchTab(this)">Groups</div>
         <div class="tab" data-tab="rules" onclick="switchTab(this)">Rules</div>
       </div>
@@ -68,6 +69,7 @@
     </div>
     <div id="panel-predict" class="panel"></div>
     <div id="panel-leaderboard" class="panel" style="display:none"></div>
+    <div id="panel-awards" class="panel" style="display:none"></div>
     <div id="panel-groups" class="panel" style="display:none"></div>
     <div id="panel-admin" class="panel" style="display:none"></div>
     <div id="panel-rules" class="panel" style="display:none"></div>
@@ -95,6 +97,10 @@
 <script src="data.js"></script>
 <!-- Bracket auto-advancement engine -->
 <script src="bracket.js"></script>
+<!-- Awards (Golden Ball/Boot/Glove predictions) -->
+<script src="awards.js"></script>
+<!-- Match notes (Twitter-style banter per match per league) -->
+<script src="notes.js"></script>
 <!-- App logic (loads last) -->
 <script src="app.js"></script>
 </body>
