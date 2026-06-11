@@ -32,6 +32,23 @@
   #not-admin-msg { display: none; max-width: 460px; margin: 80px auto; padding: 28px; background: #fff; border-radius: 12px; box-shadow: var(--shadow-lg); text-align: center; }
   .back-link { color: rgba(255,255,255,.7); font-size: 12px; }
   .back-link:hover { color: #fff; }
+  .progress-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .progress-table thead th { background: #f4f6fb; font-family: var(--fh); font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; padding: 8px 10px; text-align: left; border-bottom: 2px solid var(--border); white-space: nowrap; }
+  .progress-table thead th.num { text-align: center; }
+  .progress-table tbody tr { border-bottom: 1px solid #f0f2f6; transition: background .1s; }
+  .progress-table tbody tr:hover { background: #f8f9fc; }
+  .progress-table tbody td { padding: 9px 10px; vertical-align: middle; }
+  .progress-table td.user-name { font-weight: 600; color: var(--navy); }
+  .progress-table td.num { text-align: center; font-family: var(--fh); font-weight: 700; }
+  .pbar { display: inline-block; width: 80px; height: 6px; background: #e0e4ee; border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+  .pbar > div { height: 100%; background: var(--green); transition: width .3s; }
+  .pct-text { font-size: 11px; color: var(--muted); }
+  .pcomplete { color: var(--green); }
+  .pwarning { color: var(--gold); }
+  .ppartial { color: var(--gold); }
+  .pnone { color: #bbb; }
+  .last-active { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .last-active.stale { color: var(--red); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -90,6 +107,21 @@
       <div id="award-results-list"></div>
     </div>
 
+    <!-- USER PROGRESS OVERVIEW -->
+    <div class="admin-card">
+      <h2>📊 User Progress Overview</h2>
+      <p class="muted">See how far each user has progressed in filling out their predictions, plus their last activity time.</p>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <label style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.3px">Filter by league:</label>
+        <select id="progress-league-filter" onchange="renderProgressTable()" style="padding:7px 10px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;background:#fff;min-width:200px">
+          <option value="">— All users (global) —</option>
+        </select>
+        <button onclick="loadUserProgress()" style="font-size:11px;color:var(--blue);background:none;border:1px solid var(--blue);border-radius:5px;padding:5px 10px;cursor:pointer">↻ Refresh</button>
+        <span id="progress-summary" style="margin-left:auto;font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div id="user-progress-list"><div class="panel-load"><div class="spinner"></div> Loading user progress...</div></div>
+    </div>
+
   </div>
 </div>
 
@@ -140,6 +172,7 @@ function initAdmin() {
   });
   loadAllPlayers();
   loadAwardResults();
+  loadUserProgress();
 }
 
 function loadAllPlayers() {
@@ -359,6 +392,250 @@ function saveAwardResult(award, playerId) {
       renderAwardPickers();
     });
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER PROGRESS OVERVIEW
+// ─────────────────────────────────────────────────────────────
+var progressState = {
+  users: [],          // [{id, display_name, is_admin}]
+  predictions: [],    // raw rows: {user_id, match_id, round, updated_at}
+  awardPreds: [],     // raw rows: {user_id, award, updated_at}
+  memberships: [],    // raw rows: {group_id, user_id, groups:{name}}
+  groups: []          // [{id, name}]
+};
+
+// Match counts per round (from data.js — static)
+var R1_GROUP_COUNT  = 72;   // 12 groups × 6 matches
+var R1_R32_COUNT    = 16;
+var R1_R16_COUNT    = 8;
+var R1_QF_COUNT     = 4;
+var R1_SF_COUNT     = 2;
+var R1_3RD_COUNT    = 1;
+var R1_FIN_COUNT    = 1;
+var R1_TOTAL        = R1_GROUP_COUNT + R1_R32_COUNT + R1_R16_COUNT + R1_QF_COUNT + R1_SF_COUNT + R1_3RD_COUNT + R1_FIN_COUNT; // 104
+var R2_TOTAL        = R1_R32_COUNT + R1_R16_COUNT + R1_QF_COUNT + R1_SF_COUNT + R1_3RD_COUNT + R1_FIN_COUNT; // 32
+var AWARDS_TOTAL    = 3;
+
+function loadUserProgress() {
+  document.getElementById('user-progress-list').innerHTML =
+    '<div class="panel-load"><div class="spinner"></div> Loading user progress...</div>';
+
+  // Helper to paginate any query past Supabase's 1000-row cap
+  function fetchAll(table, selectCols, orderCol) {
+    var collected = [];
+    var PAGE = 1000;
+    function next(offset) {
+      var q = sb.from(table).select(selectCols).range(offset, offset + PAGE - 1);
+      if (orderCol) q = q.order(orderCol);
+      return q.then(function(r) {
+        if (r.error) throw r.error;
+        var batch = r.data || [];
+        collected = collected.concat(batch);
+        if (batch.length === PAGE) return next(offset + PAGE);
+        return collected;
+      });
+    }
+    return next(0);
+  }
+
+  Promise.all([
+    sb.from('profiles').select('id,display_name,is_admin').order('display_name'),
+    fetchAll('predictions', 'user_id,match_id,round,updated_at'),
+    fetchAll('award_predictions', 'user_id,award,updated_at'),
+    sb.from('groups').select('id,name').order('name'),
+    sb.from('group_members').select('group_id,user_id')
+  ]).then(function(rs) {
+    progressState.users       = rs[0].data || [];
+    progressState.predictions = rs[1] || [];
+    progressState.awardPreds  = rs[2] || [];
+    progressState.groups      = rs[3].data || [];
+    progressState.memberships = rs[4].data || [];
+
+    // Populate league filter dropdown
+    var sel = document.getElementById('progress-league-filter');
+    // Preserve current selection if possible
+    var currentSel = sel.value;
+    var html = '<option value="">— All users (global) —</option>';
+    progressState.groups.forEach(function(g) {
+      html += '<option value="'+g.id+'"'+(g.id===currentSel?' selected':'')+'>'+escapeHtml(g.name)+'</option>';
+    });
+    sel.innerHTML = html;
+
+    renderProgressTable();
+  }).catch(function(e) {
+    document.getElementById('user-progress-list').innerHTML =
+      '<div style="padding:20px;color:var(--red);font-size:13px">Failed to load progress: ' + (e.message || e) + '</div>';
+  });
+}
+
+function escapeHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = String(s || '');
+  return d.innerHTML;
+}
+
+function renderProgressTable() {
+  var leagueId = document.getElementById('progress-league-filter').value;
+
+  // Build set of user_ids to include
+  var includeUid = null;
+  if (leagueId) {
+    includeUid = {};
+    progressState.memberships.forEach(function(m) {
+      if (m.group_id === leagueId) includeUid[m.user_id] = true;
+    });
+  }
+
+  // Index predictions and award_predictions by user_id for fast lookup
+  var byUser = {};   // user_id -> { r1Group, r1R32, r1R16, r1QF, r1SF, r1_3rd, r1Fin, r2..., awards, lastActive }
+
+  function getRoundCountForId(matchId) {
+    // Determine which round count bucket this match falls into based on prefix
+    if (matchId.charAt(0) === 'G') return 'group';
+    if (matchId.indexOf('R32_') === 0) return 'r32';
+    if (matchId.indexOf('R16_') === 0) return 'r16';
+    if (matchId.indexOf('QF_')  === 0) return 'qf';
+    if (matchId.indexOf('SF_')  === 0) return 'sf';
+    if (matchId.indexOf('3P_')  === 0) return '_3rd';
+    if (matchId.indexOf('FIN_') === 0) return 'fin';
+    return null;
+  }
+
+  progressState.predictions.forEach(function(p) {
+    if (!byUser[p.user_id]) byUser[p.user_id] = {
+      r1: { group:0, r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+      r2: { r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+      awards: 0,
+      lastActive: null
+    };
+    var bucket = getRoundCountForId(p.match_id);
+    if (!bucket) return;
+    var roundObj = p.round === 2 ? byUser[p.user_id].r2 : byUser[p.user_id].r1;
+    if (roundObj[bucket] !== undefined) roundObj[bucket]++;
+    // Track last activity
+    if (p.updated_at) {
+      var t = new Date(p.updated_at).getTime();
+      if (!byUser[p.user_id].lastActive || t > byUser[p.user_id].lastActive) {
+        byUser[p.user_id].lastActive = t;
+      }
+    }
+  });
+
+  progressState.awardPreds.forEach(function(ap) {
+    if (!byUser[ap.user_id]) byUser[ap.user_id] = {
+      r1: { group:0, r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+      r2: { r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+      awards: 0,
+      lastActive: null
+    };
+    byUser[ap.user_id].awards++;
+    if (ap.updated_at) {
+      var t = new Date(ap.updated_at).getTime();
+      if (!byUser[ap.user_id].lastActive || t > byUser[ap.user_id].lastActive) {
+        byUser[ap.user_id].lastActive = t;
+      }
+    }
+  });
+
+  // Build rows
+  var rows = progressState.users
+    .filter(function(u){ return !includeUid || includeUid[u.id]; })
+    .map(function(u) {
+      var stats = byUser[u.id] || {
+        r1: { group:0, r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+        r2: { r32:0, r16:0, qf:0, sf:0, _3rd:0, fin:0 },
+        awards: 0,
+        lastActive: null
+      };
+      var r1Total = stats.r1.group + stats.r1.r32 + stats.r1.r16 + stats.r1.qf + stats.r1.sf + stats.r1._3rd + stats.r1.fin;
+      var r2Total = stats.r2.r32 + stats.r2.r16 + stats.r2.qf + stats.r2.sf + stats.r2._3rd + stats.r2.fin;
+      return {
+        user: u,
+        stats: stats,
+        r1Total: r1Total,
+        r2Total: r2Total
+      };
+    });
+
+  // Sort by R1 completion descending (most complete first), then by name
+  rows.sort(function(a, b) {
+    if (b.r1Total !== a.r1Total) return b.r1Total - a.r1Total;
+    return (a.user.display_name || '').localeCompare(b.user.display_name || '');
+  });
+
+  if (!rows.length) {
+    document.getElementById('user-progress-list').innerHTML =
+      '<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center">No users match this filter.</div>';
+    document.getElementById('progress-summary').textContent = '';
+    return;
+  }
+
+  // Summary
+  var totalUsers = rows.length;
+  var fullyDoneR1 = rows.filter(function(r){return r.r1Total === R1_TOTAL;}).length;
+  var noPicks = rows.filter(function(r){return r.r1Total === 0 && r.stats.awards === 0;}).length;
+  document.getElementById('progress-summary').innerHTML =
+    '<strong>'+totalUsers+'</strong> users · <strong>'+fullyDoneR1+'</strong> finished R1' +
+    (noPicks ? ' · <strong style="color:var(--red)">'+noPicks+'</strong> haven\'t started' : '');
+
+  var html = '<div style="overflow-x:auto"><table class="progress-table">';
+  html += '<thead><tr>';
+  html += '<th>Player</th>';
+  html += '<th class="num">R1 Total</th>';
+  html += '<th class="num" title="Group stage">Group</th>';
+  html += '<th class="num">R32</th>';
+  html += '<th class="num">R16</th>';
+  html += '<th class="num">QF</th>';
+  html += '<th class="num">SF</th>';
+  html += '<th class="num">3rd</th>';
+  html += '<th class="num">Fin</th>';
+  html += '<th class="num">R2</th>';
+  html += '<th class="num">Awards</th>';
+  html += '<th>Last activity</th>';
+  html += '</tr></thead><tbody>';
+
+  rows.forEach(function(r) {
+    var r1pct = Math.round(r.r1Total / R1_TOTAL * 100);
+    var r1cls = r.r1Total === R1_TOTAL ? 'pcomplete' : (r.r1Total === 0 ? 'pnone' : 'ppartial');
+    var r2cls = r.r2Total === R2_TOTAL ? 'pcomplete' : (r.r2Total === 0 ? 'pnone' : 'ppartial');
+    var awardsCls = r.stats.awards === AWARDS_TOTAL ? 'pcomplete' : (r.stats.awards === 0 ? 'pnone' : 'ppartial');
+
+    html += '<tr>';
+    html += '<td class="user-name">'+escapeHtml(r.user.display_name || '(no name)')+(r.user.is_admin?' <span style="font-size:10px;color:var(--gold);font-weight:700;background:var(--gold-l);padding:1px 5px;border-radius:3px">ADMIN</span>':'')+'</td>';
+    html += '<td class="num"><span class="pbar"><div style="width:'+r1pct+'%"></div></span><span class="pct-text">'+r.r1Total+'/'+R1_TOTAL+'</span></td>';
+    html += '<td class="num '+(r.stats.r1.group === R1_GROUP_COUNT ? 'pcomplete' : (r.stats.r1.group === 0 ? 'pnone' : 'ppartial'))+'">'+r.stats.r1.group+'/'+R1_GROUP_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1.r32 === R1_R32_COUNT ? 'pcomplete' : (r.stats.r1.r32 === 0 ? 'pnone' : 'ppartial'))+'">'+r.stats.r1.r32+'/'+R1_R32_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1.r16 === R1_R16_COUNT ? 'pcomplete' : (r.stats.r1.r16 === 0 ? 'pnone' : 'ppartial'))+'">'+r.stats.r1.r16+'/'+R1_R16_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1.qf === R1_QF_COUNT ? 'pcomplete' : (r.stats.r1.qf === 0 ? 'pnone' : 'ppartial'))+'">'+r.stats.r1.qf+'/'+R1_QF_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1.sf === R1_SF_COUNT ? 'pcomplete' : (r.stats.r1.sf === 0 ? 'pnone' : 'ppartial'))+'">'+r.stats.r1.sf+'/'+R1_SF_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1._3rd === R1_3RD_COUNT ? 'pcomplete' : 'pnone')+'">'+r.stats.r1._3rd+'/'+R1_3RD_COUNT+'</td>';
+    html += '<td class="num '+(r.stats.r1.fin === R1_FIN_COUNT ? 'pcomplete' : 'pnone')+'">'+r.stats.r1.fin+'/'+R1_FIN_COUNT+'</td>';
+    html += '<td class="num '+r2cls+'">'+r.r2Total+'/'+R2_TOTAL+'</td>';
+    html += '<td class="num '+awardsCls+'">'+r.stats.awards+'/'+AWARDS_TOTAL+'</td>';
+    html += '<td class="last-active'+(isStale(r.stats.lastActive)?' stale':'')+'">'+fmtRelativeTime(r.stats.lastActive)+'</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  document.getElementById('user-progress-list').innerHTML = html;
+}
+
+function isStale(timestamp) {
+  if (!timestamp) return true;
+  // Stale if more than 7 days ago
+  return (Date.now() - timestamp) > 7 * 24 * 60 * 60 * 1000;
+}
+
+function fmtRelativeTime(timestamp) {
+  if (!timestamp) return 'never';
+  var diff = (Date.now() - timestamp) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + ' min ago';
+  if (diff < 86400) return Math.floor(diff/3600) + ' hours ago';
+  if (diff < 604800) return Math.floor(diff/86400) + ' days ago';
+  var d = new Date(timestamp);
+  return d.toLocaleDateString('nl-NL', { day:'2-digit', month:'short', year:'2-digit' });
 }
 </script>
 </body>
