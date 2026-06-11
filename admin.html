@@ -49,6 +49,30 @@
   .pnone { color: #bbb; }
   .last-active { font-size: 11px; color: var(--muted); white-space: nowrap; }
   .last-active.stale { color: var(--red); font-weight: 600; }
+  .results-tab-bar { display: inline-flex; background: #f4f6fb; border-radius: 7px; padding: 3px; }
+  .results-tab { font-family: var(--fh); font-size: 12px; font-weight: 700; padding: 6px 14px; background: none; border: none; cursor: pointer; color: var(--muted); border-radius: 5px; letter-spacing: .3px; }
+  .results-tab.active { background: var(--navy); color: #fff; }
+  .results-group-hdr { font-family: var(--fh); font-size: 12px; font-weight: 700; color: var(--muted); padding: 12px 4px 6px; letter-spacing: .4px; text-transform: uppercase; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+  .results-stage-hdr { font-family: var(--fh); font-size: 13px; font-weight: 700; color: var(--navy); padding: 14px 4px 6px; letter-spacing: .3px; }
+  .res-row { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 10px; align-items: center; padding: 8px 4px; border-bottom: 1px solid #f0f2f6; font-size: 13px; }
+  .res-row:last-child { border-bottom: none; }
+  .res-row .team-name { color: var(--navy); font-weight: 500; }
+  .res-row .team-name.right { text-align: right; }
+  .res-row .res-inputs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center; }
+  .res-row .res-inputs input { width: 36px; height: 28px; text-align: center; font-family: var(--fh); font-size: 14px; font-weight: 700; color: var(--navy); border: 1.5px solid var(--border); border-radius: 5px; background: #fff; outline: none; }
+  .res-row .res-inputs input:focus { border-color: var(--blue); }
+  .res-row .res-inputs select { font-size: 11px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: #fff; outline: none; }
+  .res-row .res-display { display: inline-flex; align-items: center; gap: 6px; font-family: var(--fh); font-weight: 700; }
+  .res-row .res-score-done { font-size: 16px; color: var(--green-d); padding: 2px 10px; background: var(--green-l); border-radius: 6px; }
+  .res-row .multiplier-pill { font-size: 10px; background: var(--gold); color: #fff; padding: 2px 6px; border-radius: 8px; font-weight: 700; }
+  .res-row .pred-count { font-size: 10px; color: var(--muted); margin-left: 4px; }
+  .res-row .res-actions { display: flex; gap: 6px; }
+  .btn-save-res { font-family: var(--fh); font-size: 11px; font-weight: 700; padding: 5px 11px; background: var(--green); color: #fff; border: none; border-radius: 5px; cursor: pointer; letter-spacing: .3px; }
+  .btn-save-res:hover { background: var(--green-d); }
+  .btn-save-res:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-edit-res { font-size: 11px; padding: 4px 8px; background: #fff; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .btn-edit-res:hover { color: var(--navy); border-color: var(--navy); }
+  .res-row .ko-time { font-size: 10px; color: var(--muted); margin-top: 2px; text-align: center; }
 </style>
 </head>
 <body>
@@ -105,6 +129,21 @@
       <h2>🏆 Award Winners</h2>
       <p class="muted">Enter the actual winners after the tournament finishes. Each player who picked correctly gets 8 points.</p>
       <div id="award-results-list"></div>
+    </div>
+
+    <!-- MATCH RESULTS -->
+    <div class="admin-card">
+      <h2>⚽ Match Results</h2>
+      <p class="muted">Enter the final score for each match (after 90 minutes). For knockout draws, also pick the AET/penalty winner so the bracket can continue.</p>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <div class="results-tab-bar">
+          <button class="results-tab active" onclick="setResultsTab('group')" id="results-tab-group">Group Stage</button>
+          <button class="results-tab" onclick="setResultsTab('ko')" id="results-tab-ko">Knockout</button>
+        </div>
+        <button onclick="loadResultsData()" style="font-size:11px;color:var(--blue);background:none;border:1px solid var(--blue);border-radius:5px;padding:5px 10px;cursor:pointer">↻ Refresh</button>
+        <span id="results-summary" style="margin-left:auto;font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div id="results-list"><div class="panel-load"><div class="spinner"></div> Loading matches...</div></div>
     </div>
 
     <!-- USER PROGRESS OVERVIEW -->
@@ -172,6 +211,7 @@ function initAdmin() {
   });
   loadAllPlayers();
   loadAwardResults();
+  loadResultsData();
   loadUserProgress();
 }
 
@@ -636,6 +676,218 @@ function fmtRelativeTime(timestamp) {
   if (diff < 604800) return Math.floor(diff/86400) + ' days ago';
   var d = new Date(timestamp);
   return d.toLocaleDateString('nl-NL', { day:'2-digit', month:'short', year:'2-digit' });
+}
+
+// ─────────────────────────────────────────────────────────────
+// MATCH RESULTS (admin entry)
+// ─────────────────────────────────────────────────────────────
+var resultsState = {
+  results: {},           // match_id -> { goals_a, goals_b, winner, multiplier, team_a, team_b }
+  predCounts: {},        // match_id -> total predictions for that match (R1 only)
+  currentTab: 'group',   // 'group' or 'ko'
+  editing: {}            // match_id -> true if user clicked "Edit"
+};
+
+function loadResultsData() {
+  document.getElementById('results-list').innerHTML =
+    '<div class="panel-load"><div class="spinner"></div> Loading matches...</div>';
+
+  function fetchAll(table, sel) {
+    var collected = [];
+    var PAGE = 1000;
+    function next(offset) {
+      return sb.from(table).select(sel).range(offset, offset + PAGE - 1).then(function(r){
+        if (r.error) throw r.error;
+        var batch = r.data || [];
+        collected = collected.concat(batch);
+        if (batch.length === PAGE) return next(offset + PAGE);
+        return collected;
+      });
+    }
+    return next(0);
+  }
+
+  Promise.all([
+    sb.from('results').select('match_id,goals_a,goals_b,winner,multiplier,team_a,team_b'),
+    fetchAll('predictions', 'match_id,round')
+  ]).then(function(rs) {
+    resultsState.results = {};
+    (rs[0].data || []).forEach(function(r) { resultsState.results[r.match_id] = r; });
+    resultsState.predCounts = {};
+    (rs[1] || []).forEach(function(p) {
+      if (p.round !== 1) return;     // only count R1 picks for multiplier context
+      resultsState.predCounts[p.match_id] = (resultsState.predCounts[p.match_id] || 0) + 1;
+    });
+    renderResultsList();
+  }).catch(function(e) {
+    document.getElementById('results-list').innerHTML =
+      '<div style="padding:20px;color:var(--red);font-size:13px">Failed to load: ' + (e.message || e) + '</div>';
+  });
+}
+
+function setResultsTab(tab) {
+  resultsState.currentTab = tab;
+  document.getElementById('results-tab-group').classList.toggle('active', tab === 'group');
+  document.getElementById('results-tab-ko').classList.toggle('active', tab === 'ko');
+  renderResultsList();
+}
+
+function renderResultsList() {
+  var html = '';
+  var done = 0, total = 0;
+  var tab = resultsState.currentTab;
+
+  if (tab === 'group') {
+    var groups = Object.keys(GROUP_TEAMS).sort();
+    groups.forEach(function(g) {
+      var gms = GROUP_MATCHES.filter(function(m){return m.g === g;}).sort(function(a, b){return a.s - b.s;});
+      html += '<div class="results-group-hdr">Group ' + g + '</div>';
+      gms.forEach(function(m) {
+        total++;
+        var r = resultsState.results[m.id];
+        var hasR = r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined;
+        if (hasR) done++;
+        html += renderResultRow(m, r, hasR, m.a, m.b, false);
+      });
+    });
+  } else {
+    var stages = ['r32','r16','qf','sf','3rd','final'];
+    stages.forEach(function(stage) {
+      var ms = KO_MATCHES.filter(function(m){return m.stage === stage;}).sort(function(a, b){return a.s - b.s;});
+      if (!ms.length) return;
+      html += '<div class="results-stage-hdr">' + STAGE_LABELS[stage] + '</div>';
+      ms.forEach(function(m) {
+        total++;
+        var r = resultsState.results[m.id];
+        var hasR = r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined;
+        if (hasR) done++;
+        var teamA = (hasR && r.team_a) ? r.team_a : m.a;
+        var teamB = (hasR && r.team_b) ? r.team_b : m.b;
+        html += renderResultRow(m, r, hasR, teamA, teamB, true);
+      });
+    });
+  }
+
+  document.getElementById('results-list').innerHTML = html;
+  document.getElementById('results-summary').innerHTML =
+    '<strong>' + done + '</strong> / ' + total + ' results entered';
+}
+
+function renderResultRow(m, r, hasR, teamA, teamB, isKnockout) {
+  var predCount = resultsState.predCounts[m.id] || 0;
+  var isEditing = resultsState.editing[m.id];
+  var html = '<div class="res-row" data-mid="' + m.id + '">';
+
+  // Team A (left, right-aligned)
+  html += '<div class="team-name right">' + escapeHtml(teamA) + '</div>';
+
+  // Middle cell — inputs or display
+  html += '<div class="res-inputs">';
+  if (hasR && !isEditing) {
+    // Show entered result
+    html += '<span class="res-score-done">' + r.goals_a + ' : ' + r.goals_b + '</span>';
+    if (isKnockout && r.winner) {
+      var winnerName = r.winner === 'A' ? teamA : teamB;
+      html += '<span style="font-size:10px;color:var(--muted)">AET: ' + escapeHtml(winnerName) + '</span>';
+    }
+    if (r.multiplier && Number(r.multiplier) > 1) {
+      html += '<span class="multiplier-pill">×' + Number(r.multiplier).toFixed(2) + '</span>';
+    }
+    html += '<span class="pred-count">(' + predCount + ' pick' + (predCount === 1 ? '' : 's') + ')</span>';
+  } else {
+    // Inputs (new or edit mode)
+    var prefillA = hasR ? r.goals_a : '';
+    var prefillB = hasR ? r.goals_b : '';
+    var prefillW = hasR ? (r.winner || '') : '';
+    html += '<input type="number" min="0" max="20" id="res-a-' + m.id + '" value="' + prefillA + '" placeholder="-">';
+    html += '<span style="color:#bbb;font-weight:700">:</span>';
+    html += '<input type="number" min="0" max="20" id="res-b-' + m.id + '" value="' + prefillB + '" placeholder="-">';
+    if (isKnockout) {
+      html += '<select id="res-w-' + m.id + '" title="If 90-min ends in a draw, pick AET winner">';
+      html += '<option value="">AET winner?</option>';
+      html += '<option value="A"' + (prefillW === 'A' ? ' selected' : '') + '>' + escapeHtml(teamA) + '</option>';
+      html += '<option value="B"' + (prefillW === 'B' ? ' selected' : '') + '>' + escapeHtml(teamB) + '</option>';
+      html += '</select>';
+    }
+    html += '<span class="pred-count">(' + predCount + ' pick' + (predCount === 1 ? '' : 's') + ')</span>';
+  }
+  html += '</div>';
+
+  // Team B (right, left-aligned)
+  html += '<div class="team-name">' + escapeHtml(teamB) + '</div>';
+
+  // Actions
+  html += '<div class="res-actions">';
+  if (hasR && !isEditing) {
+    html += '<button class="btn-edit-res" onclick="editResultRow(\'' + m.id + '\')">Edit</button>';
+  } else {
+    html += '<button class="btn-save-res" onclick="saveResultRow(\'' + m.id + '\', ' + (isKnockout ? 'true' : 'false') + ', \'' + teamA.replace(/'/g, "\\'") + '\', \'' + teamB.replace(/'/g, "\\'") + '\')">' + (hasR ? 'Update' : 'Save') + '</button>';
+    if (hasR) {
+      html += '<button class="btn-edit-res" onclick="cancelEditResult(\'' + m.id + '\')">Cancel</button>';
+    }
+  }
+  html += '</div>';
+
+  html += '</div>';
+  return html;
+}
+
+function editResultRow(matchId) {
+  resultsState.editing[matchId] = true;
+  renderResultsList();
+}
+
+function cancelEditResult(matchId) {
+  delete resultsState.editing[matchId];
+  renderResultsList();
+}
+
+function saveResultRow(matchId, isKnockout, teamA, teamB) {
+  var aEl = document.getElementById('res-a-' + matchId);
+  var bEl = document.getElementById('res-b-' + matchId);
+  if (!aEl || !bEl) return;
+  var a = aEl.value !== '' ? parseInt(aEl.value, 10) : NaN;
+  var b = bEl.value !== '' ? parseInt(bEl.value, 10) : NaN;
+  if (isNaN(a) || isNaN(b)) { toast('Enter both scores', 'err'); return; }
+  if (a < 0 || a > 20 || b < 0 || b > 20) { toast('Scores must be 0-20', 'err'); return; }
+
+  var winner = '';
+  if (isKnockout) {
+    var wEl = document.getElementById('res-w-' + matchId);
+    winner = wEl ? wEl.value : '';
+    if (a === b && !winner) {
+      toast('Scores are level — pick the AET winner', 'err');
+      return;
+    }
+  }
+
+  sb.auth.getSession().then(function(s) {
+    var payload = {
+      match_id:   matchId,
+      goals_a:    a,
+      goals_b:    b,
+      entered_by: s.data.session.user.id,
+      entered_at: new Date().toISOString()
+    };
+    if (isKnockout) {
+      payload.winner = winner || null;
+      payload.team_a = teamA;
+      payload.team_b = teamB;
+    }
+    sb.from('results').upsert(payload, { onConflict: 'match_id' }).then(function(r) {
+      if (r.error) { toast('Save failed: ' + r.error.message, 'err'); return; }
+      // Re-compute multiplier (Postgres RPC)
+      sb.rpc('compute_multiplier', { p_match_id: matchId }).then(function() {
+        // Fetch the updated row (with new multiplier)
+        sb.from('results').select('*').eq('match_id', matchId).single().then(function(r2) {
+          if (r2.data) resultsState.results[matchId] = r2.data;
+          delete resultsState.editing[matchId];
+          renderResultsList();
+          toast('✓ Saved ' + a + ' - ' + b + (winner ? ' (' + winner + ')' : ''), 'ok');
+        });
+      });
+    });
+  });
 }
 </script>
 </body>
