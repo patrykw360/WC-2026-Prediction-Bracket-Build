@@ -209,12 +209,33 @@ function switchTab(el){
 // RENDER PREDICTIONS
 // ─────────────────────────────────────────────────────────────
 function renderPredict(){
-  var preds=viewedUid===null?myPreds:viewedPreds;
+  var rawPreds=viewedUid===null?myPreds:viewedPreds;
   var isMe=viewedUid===null;
   var html='';
   var filled=0, pts=0;
 
-  // Build the auto-advanced bracket from this player's predictions
+  // ── LATE-JOINER PRE-FILL ──
+  // For any locked match where the user has no prediction but a real result exists,
+  // treat the actual result as their prediction. This gives them the real knockout
+  // bracket (because `buildBracket` now sees actual winners) without awarding points
+  // (handled below — auto-filled rows are flagged and skipped from scoring).
+  // We don't mutate `rawPreds` (which is the canonical state) — we build an overlay.
+  var preds = {};
+  var autoFilled = {};   // matchId -> true  (rows that came from actual results, not user input)
+  Object.keys(rawPreds).forEach(function(k){ preds[k] = rawPreds[k]; });
+  var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
+  allMatches.forEach(function(m) {
+    var r = allResults[m.id];
+    var existing = preds[m.id];
+    var hasExisting = existing && existing.a !== null && existing.a !== undefined && existing.b !== null && existing.b !== undefined;
+    if (isLocked(m.ko) && !hasExisting && r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined) {
+      // Carry the AET winner if the result has one — needed for knockout chaining on draws
+      preds[m.id] = { a: r.goals_a, b: r.goals_b, w: r.winner || null };
+      autoFilled[m.id] = true;
+    }
+  });
+
+  // Build the auto-advanced bracket from this player's (overlaid) predictions
   var bracket = buildBracket(preds);
 
   // ── Welcome message (dismissable, only shown to self, only once per browser) ──
@@ -231,7 +252,8 @@ function renderPredict(){
             '<strong>2.</strong> Once you finish the group stage, your Round of 32 will fill in based on YOUR predicted standings.<br>' +
             '<strong>3.</strong> Keep predicting each knockout round — winners chain into the next round.<br>' +
             '<strong>4.</strong> Picks save automatically. The green Save button at the bottom of each round is a backup.<br>' +
-            '<strong>5.</strong> Predictions lock at kickoff. Visit the Standings tab to track how you stack up.' +
+            '<strong>5.</strong> Predictions lock at kickoff. Visit the Standings tab to track how you stack up.<br>' +
+            '<strong>6.</strong> <em>Late to the party?</em> No problem — past matches show the actual result (no points), and your knockout bracket uses real teams. You can still predict any upcoming match.' +
           '</div>' +
         '</div>';
     }
@@ -242,6 +264,31 @@ function renderPredict(){
     var p = preds[m.id];
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
   }).length;
+
+  // ── Late-joiner banner ──
+  // Detect: user looking at their own predictions, AND there's at least one
+  // locked match they didn't fill in, AND at least one upcoming match they can still fill.
+  if (isMe) {
+    var lockedMissed = 0;
+    var upcomingOpen = 0;
+    var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
+    allMatches.forEach(function(m) {
+      var p = preds[m.id];
+      var hasP = p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
+      if (isLocked(m.ko)) {
+        if (!hasP) lockedMissed++;
+      } else {
+        if (!hasP) upcomingOpen++;
+      }
+    });
+    if (lockedMissed > 0 && upcomingOpen > 0) {
+      html += '<div class="late-joiner-banner">' +
+                '<strong style="font-size:14px">🕒 You can still join in!</strong><br>' +
+                '<span style="opacity:.92">' + lockedMissed + ' match' + (lockedMissed===1?'':'es') + ' already kicked off — those show the actual results and earn no points. You still have <strong>' + upcomingOpen + ' upcoming match' + (upcomingOpen===1?'':'es') + '</strong> you can predict (and your knockout bracket will use real teams).' +
+                '</span>' +
+              '</div>';
+    }
+  }
 
   // ── Group stage completion banner ──
   if (isMe && groupFilled === GROUP_MATCHES.length) {
@@ -263,13 +310,18 @@ function renderPredict(){
       var locked=isLocked(m.ko);
       var pa=pred?pred.a:null, pb=pred?pred.b:null;
       var hasPred=pa!==null&&pb!==null;
+      var isAuto = !!autoFilled[m.id];
       if(hasPred)filled++;
-      var bp=(hasPred&&res)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
+      // Auto-filled rows: no points awarded, no scoring badge
+      var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
       var mult=res?Number(res.multiplier||1):1;
       var fp=bp!==null?Math.round(bp*mult*100)/100:null;
       if(fp!==null)pts+=fp;
       var t=tend(pa,pb);
-      var rc='match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
+      // Late-joiner support: distinguish "you didn't predict" vs "auto-filled with actual result"
+      var lockedNoPred = locked && !hasPred;
+      // Auto-filled rows get a faded look too (it's not really YOUR pick)
+      var rc='match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred&&!isAuto?' has-p':'')+(lockedNoPred||isAuto?' locked-no-pred':'');
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onInp(\''+m.id+'\',this.closest(\'.match-row\'))"':'';
@@ -283,7 +335,9 @@ function renderPredict(){
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
       if(mult>1&&bp>0)html+='<span class="mx-tag">×'+mult.toFixed(2)+'</span>';
-      if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
+      if(isAuto) html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
+      else if(lockedNoPred) html+='<span class="locked-badge" title="Kickoff: '+esc(fmtKO(m.ko))+'">🔒 '+esc(fmtKO(m.ko))+'</span>';
+      else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
       if(savingSet[m.id])html+='<span class="sv-dot"></span>';
       html+='</div>';
       html+='<div class="team">'+esc(m.b)+'</div>';
@@ -329,11 +383,14 @@ function renderPredict(){
       var locked=isLocked(m.ko);
       var pa=pred?pred.a:null, pb=pred?pred.b:null, pw=pred?pred.w:'';
       var hasPred=pa!==null&&pb!==null;
+      var isAuto = !!autoFilled[m.id];
       if(hasPred)filled++;
-      var bp=(hasPred&&res)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
+      // Auto-filled: no points awarded
+      var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
       var fp=bp!==null?Number(bp):null;
       if(fp!==null)pts+=fp;
-      var rc='ko-match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
+      var lockedNoPred = locked && !hasPred;
+      var rc='ko-match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred&&!isAuto?' has-p':'')+(lockedNoPred||isAuto?' locked-no-pred':'');
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onKoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"':'';
@@ -350,7 +407,9 @@ function renderPredict(){
       html+='<input type="number" min="0" max="20" value="'+(pb!==null?pb:'')+'" class="s-inp'+(pb!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="b"'+dis+ev+'>';
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
-      if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
+      if(isAuto)html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
+      else if(lockedNoPred)html+='<span class="locked-badge">🔒 Missed</span>';
+      else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
       if(savingSet[m.id])html+='<span class="sv-dot"></span>';
       html+='</div>';
       // Winner pick shown only when prediction is a draw (knockout needs AET winner)
@@ -1108,6 +1167,8 @@ function renderRules(){
     '<p class="rules-note">Predict the scoreline after 90 minutes for every knockout match. If you predict a draw, a dropdown appears to pick who you think wins after extra time / penalties. This counts as a bonus tiebreaker but does <strong>not</strong> affect your 4/3/2/0 score (which is always based on 90 minutes).</p></div>',
     '<div class="rules-sec"><h3>Prediction Lock</h3>',
     '<p class="rules-note">All inputs lock automatically at scheduled kickoff. League-mates can see each other\'s picks anytime; users outside your league can\'t.</p></div>',
+    '<div class="rules-sec"><h3>Joining late</h3>',
+    '<p class="rules-note">You can sign up and start predicting at any point during the tournament. For matches that already kicked off, the site shows the actual result in your predictions list (marked "🕒 Auto · 0 pts") — these earn no points but DO carry through to your knockout bracket, so you get the real R16/QF/etc. matchups. Any upcoming match is fully open for you to predict and score normally.</p></div>',
     '<div class="rules-sec"><h3>Tiebreaker</h3>',
     '<p class="rules-note">Equal points → most exact scores wins. Still tied → most correct goal differences.</p></div>',
     '<div class="rules-sec"><h3>Tournament Awards (NEW)</h3>',
