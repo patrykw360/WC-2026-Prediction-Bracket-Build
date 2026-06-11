@@ -44,7 +44,16 @@ function scoreP(pa,pb,ra,rb){
   return 0;
 }
 function tend(a,b){if(a===null||b===null)return '';if(a>b)return 'A';if(a===b)return 'D';return 'B';}
-function isLocked(ko){return ko&&new Date(ko)<new Date();}
+// Set to true to lock every R1 prediction across the board (tournament has started).
+// Round 2 picks (made after group stage ends, against real matchups) are unaffected.
+var R1_GLOBAL_LOCK = true;
+function isLocked(ko){
+  // Global lock: once flipped to true, ALL round-1 predictions are locked
+  // regardless of individual match kickoff. Set this when the tournament starts
+  // to freeze every user's R1 picks. Round 2 saves use a separate path.
+  if (R1_GLOBAL_LOCK) return true;
+  return ko && new Date(ko) < new Date();
+}
 function fmtKO(iso){
   if(!iso)return '';
   var d=new Date(iso);
@@ -179,6 +188,9 @@ function setupRealtime(){
     sb.from('tournament_state').select('*').single().then(function(r){
       if(r&&r.data)tournamentState=r.data;
       renderPredict();
+      // If user is currently looking at the Results tab, refresh it too
+      var resultsTabActive = document.querySelector('.tab.active[data-tab=results]');
+      if (resultsTabActive) renderResults();
     });
     if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
   }).subscribe();
@@ -191,7 +203,7 @@ function switchTab(el){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
   el.classList.add('active');
   var tab=el.dataset.tab;
-  ['predict','leaderboard','awards','groups','admin','rules'].forEach(function(t){
+  ['predict','leaderboard','awards','results','groups','admin','rules'].forEach(function(t){
     var p=document.getElementById('panel-'+t);
     if(p)p.style.display=t===tab?'':'none';
   });
@@ -202,6 +214,7 @@ function switchTab(el){
   if(tab==='leaderboard'){lbData=[];lbOffset=0;loadAndRenderLb();}
   if(tab==='groups')renderGroups();
   if(tab==='awards')loadAwards();
+  if(tab==='results')renderResults();
   if(tab==='admin'&&myProfile&&myProfile.is_admin)renderAdmin();
 }
 
@@ -265,10 +278,19 @@ function renderPredict(){
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
   }).length;
 
+  // ── Tournament-started global lock banner ──
+  if (isMe && R1_GLOBAL_LOCK) {
+    html += '<div style="background:linear-gradient(135deg,#7a2a1e 0%,#a83a2a 100%);color:#fff;padding:12px 18px;font-size:13px;line-height:1.5;border-bottom:1px solid var(--border)">' +
+              '<strong style="font-family:var(--fh);font-size:14px;letter-spacing:.3px">🔒 Round 1 predictions are locked</strong><br>' +
+              '<span style="opacity:.92">The tournament has started — your Round 1 picks are final. Round 2 picks (against the real bracket) will open automatically once the group stage ends.</span>' +
+            '</div>';
+  }
+
   // ── Late-joiner banner ──
   // Detect: user looking at their own predictions, AND there's at least one
   // locked match they didn't fill in, AND at least one upcoming match they can still fill.
-  if (isMe) {
+  // (Hidden when R1_GLOBAL_LOCK is on, because then there's no "upcoming" to predict.)
+  if (isMe && !R1_GLOBAL_LOCK) {
     var lockedMissed = 0;
     var upcomingOpen = 0;
     var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
@@ -1179,6 +1201,106 @@ function renderRules(){
     '<p class="rules-note">Create a private league and share the 6-letter join code with friends. You appear on both your league\'s leaderboard and the global leaderboard. Leagues support 2–20 players.</p></div>',
     '</div>'
   ].join('');
+}
+
+// ─────────────────────────────────────────────────────────────
+// RESULTS TAB — read-only feed of every match's result + status
+// Sorted: completed matches (most recent first) → upcoming by kickoff
+// ─────────────────────────────────────────────────────────────
+function renderResults(){
+  var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
+
+  // Annotate each match with status + sort key
+  var enriched = allMatches.map(function(m){
+    var r = allResults[m.id];
+    var hasResult = r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined;
+    var locked = m.ko && new Date(m.ko) < new Date();
+    var status;
+    if (hasResult) status = 'done';
+    else if (locked) status = 'live';        // kicked off but no result entered yet
+    else status = 'upcoming';
+    var koTime = m.ko ? new Date(m.ko).getTime() : 0;
+    var sortKey;
+    // Order: live first, then completed (most recent kickoff first), then upcoming (soonest first)
+    if (status === 'live')      sortKey = -1000000000000 + (Date.now() - koTime);
+    else if (status === 'done') sortKey = -koTime;            // most-recent kickoff first
+    else                        sortKey =  koTime;            // soonest upcoming first
+    return { m: m, r: r, status: status, hasResult: hasResult, sortKey: sortKey, koTime: koTime };
+  });
+
+  enriched.sort(function(a, b){ return a.sortKey - b.sortKey; });
+
+  // Stage label for the row's small label
+  var stageLabelOf = function(m){
+    if (m.g) return 'Group ' + m.g;
+    if (m.stage && STAGE_LABELS[m.stage]) return STAGE_LABELS[m.stage];
+    return '';
+  };
+
+  // For knockout matches without entered team names yet, fall back to slot label
+  var displayName = function(m, r, side) {
+    if (r && r['team_'+side]) return r['team_'+side];
+    return side === 'a' ? m.a : m.b;
+  };
+
+  // Tally for the summary at top
+  var doneCount    = enriched.filter(function(e){return e.status==='done';}).length;
+  var liveCount    = enriched.filter(function(e){return e.status==='live';}).length;
+  var upcomingCount = enriched.filter(function(e){return e.status==='upcoming';}).length;
+
+  var html = '';
+  // Summary header
+  html += '<div style="background:linear-gradient(135deg,#0d1f3c 0%,#1e3a6e 100%);color:#fff;padding:16px 18px">';
+  html += '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">📺 Live Results</div>';
+  html += '<div style="font-size:13px;line-height:1.5;opacity:.95">';
+  html += '<strong>'+doneCount+'</strong> completed';
+  if (liveCount > 0) html += ' · <strong style="color:#ffd54f">'+liveCount+'</strong> in progress';
+  html += ' · <strong>'+upcomingCount+'</strong> upcoming. Sorted most recent first.';
+  html += '</div>';
+  html += '</div>';
+
+  // List
+  enriched.forEach(function(e){
+    var m = e.m, r = e.r;
+    var teamA = displayName(m, r, 'a');
+    var teamB = displayName(m, r, 'b');
+
+    var bgColor, badge, scoreHtml;
+    if (e.status === 'done') {
+      bgColor = '#fff';
+      badge   = '<span style="background:#e6f4ec;color:#0d4a2a;border:1px solid #70c090;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">Final</span>';
+      var aetSuffix = r.winner ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">(AET → '+esc(r.winner==='A'?teamA:teamB)+')</span>' : '';
+      scoreHtml = '<span style="font-family:var(--fh);font-size:22px;font-weight:900;color:var(--navy)">'+r.goals_a+' : '+r.goals_b+'</span>' + aetSuffix;
+      if (r.multiplier && Number(r.multiplier) > 1) {
+        scoreHtml += ' <span style="font-size:11px;background:var(--gold);color:#fff;padding:2px 6px;border-radius:8px;font-weight:700">×'+Number(r.multiplier).toFixed(2)+'</span>';
+      }
+    } else if (e.status === 'live') {
+      bgColor = '#fff8e1';
+      badge   = '<span style="background:#fff3cd;color:#856404;border:1px solid #ffd54f;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">⚽ Live / Awaiting</span>';
+      scoreHtml = '<span style="font-family:var(--fh);font-size:18px;font-weight:700;color:#856404">— : —</span> <span style="font-size:11px;color:var(--muted)">(result pending)</span>';
+    } else {
+      bgColor = '#fafafa';
+      badge   = '<span style="background:#f0f2f6;color:var(--muted);border:1px solid var(--border);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">Upcoming</span>';
+      scoreHtml = '<span style="font-size:13px;color:var(--muted)">Kicks off '+esc(fmtKO(m.ko))+'</span>';
+    }
+
+    html += '<div style="background:'+bgColor+';border-bottom:1px solid #f0f2f6;padding:12px 16px">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+    html += '<span style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">'+esc(stageLabelOf(m))+'</span>';
+    html += badge;
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center">';
+    html += '<div style="text-align:right;font-weight:600;color:var(--navy);font-size:14px">'+esc(teamA)+'</div>';
+    html += '<div style="text-align:center">'+scoreHtml+'</div>';
+    html += '<div style="text-align:left;font-weight:600;color:var(--navy);font-size:14px">'+esc(teamB)+'</div>';
+    html += '</div>';
+    if (e.status === 'done' && m.ko) {
+      html += '<div style="text-align:center;font-size:10px;color:var(--muted);margin-top:6px">'+esc(fmtKO(m.ko))+'</div>';
+    }
+    html += '</div>';
+  });
+
+  document.getElementById('panel-results').innerHTML = html;
 }
 
 init();
