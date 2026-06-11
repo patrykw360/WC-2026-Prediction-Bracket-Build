@@ -1,14 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// BRACKET ENGINE  —  auto-advances knockout matchups based on
-// the user's predictions, following FIFA 2026 rules.
-//
-// Public API:
-//   buildBracket(predictions) → { koTeams: { R32_01:{a:'Mexico',b:...}, ... }, complete: {group:true, r32:false, ...} }
-//
-// Depends on: GROUP_TEAMS, GROUP_MATCHES, KO_MATCHES (from data.js)
-// ═══════════════════════════════════════════════════════════════
-
-// ───────────────────────────────────────────────────────────────
 // FIFA Annex C — Best-3rd-place team routing
 // Maps the 8-letter combo of groups whose 3rd-place teams advance
 // to which 3rd-place team goes into which R32 match.
@@ -122,19 +111,36 @@ function assignBest3rdToSlots(best3rd) {
   var slotMap = ANNEX_C[combo];
   var assignment = {};
 
+  // Helper: get the team for a group letter
+  var teamByGroup = {};
+  best3rd.forEach(function(t){ teamByGroup[t.group] = t.team; });
+
   if (slotMap) {
-    // Use the official Annex C mapping
-    BEST3_SLOTS.forEach(function(slot) {
-      var groupLetter = slotMap[slot];
-      var team = best3rd.find(function(t){return t.group === groupLetter;});
-      assignment[slot] = team ? team.team : '3rd Place';
+    // Check that every slot can actually be resolved from this combo —
+    // i.e. the slotMap references only group letters present in best3rd.
+    var allResolvable = BEST3_SLOTS.every(function(slot) {
+      return teamByGroup[slotMap[slot]];
     });
-  } else {
-    // Fallback: assign in order if combo isn't in our table
-    BEST3_SLOTS.forEach(function(slot, i) {
-      assignment[slot] = best3rd[i] ? best3rd[i].team : '3rd Place';
-    });
+    if (allResolvable) {
+      BEST3_SLOTS.forEach(function(slot) {
+        assignment[slot] = teamByGroup[slotMap[slot]];
+      });
+      return assignment;
+    }
+    // Otherwise fall through to the deterministic fallback below
   }
+
+  // Fallback: assign the 8 best-3rd teams to the 8 slots in BEST3_SLOTS order.
+  // best3rd is already sorted by ranking (best first), so slot 1 gets the best team etc.
+  // This isn't fully FIFA-spec for unusual combos, but it never leaves a slot empty
+  // as long as we have 8 best-3rd teams.
+  BEST3_SLOTS.forEach(function(slot, i) {
+    if (best3rd[i] && best3rd[i].team) {
+      assignment[slot] = best3rd[i].team;
+    } else {
+      assignment[slot] = '3rd Place';
+    }
+  });
   return assignment;
 }
 
