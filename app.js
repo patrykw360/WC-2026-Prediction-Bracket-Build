@@ -2,14 +2,14 @@
 // APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
 // Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
 // ═══════════════════════════════════════════════════════════════
- 
+
 // ─────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
-var viewedUid=null, viewedPreds={}, viewedPredsR2={};
+var viewedUid=null, viewedPreds={}, viewedPredsR2={}, viewedName='';
 var lbData=[], lbOffset=0, lbMode='global', lbGroupId=null;
 var myGroups=[];
 var tournamentState={round2_open:false, group_results_entered:0, group_matches_total:72};
@@ -19,7 +19,7 @@ var srchCache={};
 var currentAdmTab='group';
 var LB_PAGE=25;
 var authMode='signin';
- 
+
 // ─────────────────────────────────────────────────────────────
 // UTILS
 // ─────────────────────────────────────────────────────────────
@@ -67,7 +67,24 @@ function notesRowHtml(matchId, isMe){
            '<div id="notes-panel-'+matchId+'" style="display:none;border-top:1px solid var(--border)"></div>' +
          '</div>';
 }
- 
+// When VIEWING a league-mate's predictions, show a "Comment on this pick" button on matches
+// where they actually have a prediction. Clicking it opens the notes panel in compose-target mode.
+function commentButtonHtml(matchId, hasPrediction){
+  if (viewedUid === null) return '';        // not browsing someone else
+  if (!hasPrediction) return '';            // no pick to comment on
+  if (!myGroups.length) return '';          // not in any league
+  // Build the panel container too — same id pattern as notesRowHtml so the notes module can target it.
+  // The escaped viewedName comes from the global; we look it up at click time via the document.
+  var nameAttr = (typeof viewedName !== 'undefined' && viewedName) ? viewedName.replace(/'/g, "\\'") : 'this player';
+  return '<div class="notes-row" style="border-bottom:1px solid #f0f2f6;background:#fcfcfd">' +
+           '<button onclick="openPredictionComment(\''+matchId+'\', \''+viewedUid+'\', \''+nameAttr+'\')" style="width:100%;text-align:left;padding:6px 14px;background:none;border:none;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;font-family:var(--fb)">' +
+             '<span style="color:#c9a227;font-weight:600">💬 Comment on this pick</span>' +
+             '<span style="color:#bbb;font-size:10px">(visible to your league)</span>' +
+           '</button>' +
+           '<div id="notes-panel-'+matchId+'" style="display:none;border-top:1px solid var(--border)"></div>' +
+         '</div>';
+}
+
 // ─────────────────────────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────────────────────────
@@ -106,7 +123,7 @@ function doAuth(){
 }
 function signOut(){sb.auth.signOut().then(function(){location.reload();});}
 document.getElementById('auth-pass').addEventListener('keydown',function(e){if(e.key==='Enter')doAuth();});
- 
+
 // ─────────────────────────────────────────────────────────────
 // BOOTSTRAP
 // ─────────────────────────────────────────────────────────────
@@ -117,7 +134,7 @@ function init(){
   });
   sb.auth.getSession().then(function(r){if(!r.data.session)show('screen-auth');});
 }
- 
+
 function loadApp(){
   show('screen-loading');
   Promise.all([
@@ -153,7 +170,7 @@ function loadApp(){
     show('screen-app');
   }).catch(function(e){setMsg('Load failed: '+(e.message||e),'err');show('screen-auth');});
 }
- 
+
 function setupRealtime(){
   if(realtimeSetup)return; realtimeSetup=true;
   sb.channel('live').on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
@@ -166,7 +183,7 @@ function setupRealtime(){
     if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
   }).subscribe();
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────
@@ -187,7 +204,7 @@ function switchTab(el){
   if(tab==='awards')loadAwards();
   if(tab==='admin'&&myProfile&&myProfile.is_admin)renderAdmin();
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // RENDER PREDICTIONS
 // ─────────────────────────────────────────────────────────────
@@ -196,10 +213,10 @@ function renderPredict(){
   var isMe=viewedUid===null;
   var html='';
   var filled=0, pts=0;
- 
+
   // Build the auto-advanced bracket from this player's predictions
   var bracket = buildBracket(preds);
- 
+
   // ── Welcome message (dismissable, only shown to self, only once per browser) ──
   if (isMe) {
     var dismissed = false;
@@ -219,13 +236,13 @@ function renderPredict(){
         '</div>';
     }
   }
- 
+
   // Count filled group predictions for completion message
   var groupFilled = GROUP_MATCHES.filter(function(m){
     var p = preds[m.id];
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
   }).length;
- 
+
   // ── Group stage completion banner ──
   if (isMe && groupFilled === GROUP_MATCHES.length) {
     html += '<div style="background:#e6f4ec;border-bottom:1px solid #70c090;padding:12px 18px;color:#0d4a2a;font-size:13px;line-height:1.5">' +
@@ -233,7 +250,7 @@ function renderPredict(){
               'All 48 predictions saved. Scroll down to predict the knockout rounds — your bracket has been built from your group-stage picks.' +
             '</div>';
   }
- 
+
   // ── Group stage ──
   html+='<div class="stage-hdr"><span class="stage-hdr-title">Group Stage</span><span class="stage-hdr-sub">48 matches · Jun 11 – Jun 27</span></div>';
   var groups=Object.keys(GROUP_TEAMS).sort();
@@ -272,9 +289,10 @@ function renderPredict(){
       html+='<div class="team">'+esc(m.b)+'</div>';
       html+='</div>';
       html+=notesRowHtml(m.id, isMe);
+      html+=commentButtonHtml(m.id, hasPred);
     });
   });
- 
+
   // Save button for the whole group stage
   if(isMe){
     html+='<div class="round-save-bar">';
@@ -282,7 +300,7 @@ function renderPredict(){
     html+='<button class="btn-round-save" id="btn-save-group" onclick="saveRound(\'group\')">Save group stage</button>';
     html+='</div>';
   }
- 
+
   // ── Knockout stages ──
   // Status banner explaining auto-advancement
   if (!bracket.complete.group) {
@@ -355,6 +373,7 @@ function renderPredict(){
       html+='<div class="team">'+esc(teamB)+'</div>';
       html+='</div>';
       html+=notesRowHtml(m.id, isMe);
+      html+=commentButtonHtml(m.id, hasPred);
     });
     // Save button for this knockout round
     if(isMe){
@@ -364,7 +383,7 @@ function renderPredict(){
       html+='</div>';
     }
   });
- 
+
   // ── ROUND 2: Official knockout predictions (only once group stage results are all in) ──
   if (tournamentState.round2_open) {
     html += renderRound2Section(isMe);
@@ -375,9 +394,9 @@ function renderPredict(){
               'After the real group-stage results are entered (all 72 matches), a second prediction round opens for the official Round of 32 onwards. Your Round 2 points stack on top of Round 1.' +
             '</div>';
   }
- 
+
   document.getElementById('panel-predict').innerHTML=html;
- 
+
   // Stats bar
   var r2Filled = 0;
   if (tournamentState.round2_open) {
@@ -395,7 +414,7 @@ function renderPredict(){
     (tournamentState.round2_open ? ' · ' + r2Filled + ' / 32 Round 2' : '');
   document.getElementById('viewer-prog').style.display='';
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // ROUND 2 SECTION — renders the official knockout bracket
 // using the real results from `allResults` (not the user's
@@ -413,10 +432,10 @@ function renderRound2Section(isMe) {
     }
   });
   var officialBracket = buildBracket(resultsAsPreds);
- 
+
   // Use Round 2 predictions for what the user submitted
   var preds = isMe ? myPredsR2 : viewedPredsR2;
- 
+
   var html = '';
   // Header banner explaining Round 2
   html += '<div style="background:linear-gradient(135deg,#1a7a4a 0%,#0d4a2a 100%);color:#fff;padding:14px 18px;margin:24px 14px 0;border-radius:8px">' +
@@ -425,16 +444,16 @@ function renderRound2Section(isMe) {
               'The real Round of 32 is set. Make fresh predictions for the official matchups — these score independently and stack on top of Round 1.' +
             '</div>' +
           '</div>';
- 
+
   var stages = ['r32','r16','qf','sf','3rd','final'];
   stages.forEach(function(stage) {
     var ms = KO_MATCHES.filter(function(m){return m.stage===stage;}).sort(function(a,b){return a.s-b.s;});
     if (!ms.length) return;
- 
+
     html += '<div class="stage-hdr" style="background:linear-gradient(90deg,#1a7a4a 0%,#0d4a2a 100%)"><span class="stage-hdr-title">R2: '+STAGE_LABELS[stage]+'</span>';
     if (STAGE_DATES[stage]) html += '<span class="stage-hdr-sub">'+STAGE_DATES[stage]+'</span>';
     html += '</div>';
- 
+
     ms.forEach(function(m) {
       var pred = preds[m.id] || null;
       var res = allResults[m.id] || null;
@@ -449,12 +468,12 @@ function renderRound2Section(isMe) {
       var canEdit = isMe && !locked;
       var dis = canEdit ? '' : ' disabled';
       var ev = canEdit ? ' oninput="onR2KoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"' : '';
- 
+
       // Real team names from official bracket (or result if entered)
       var brTeams = officialBracket.koTeams[m.id] || {};
       var teamA = res && res.team_a ? res.team_a : (brTeams.a || m.a);
       var teamB = res && res.team_b ? res.team_b : (brTeams.b || m.b);
- 
+
       html += '<div class="'+rc+'" data-mid="'+m.id+'-r2">';
       html += '<div class="team home">'+esc(teamA)+'</div>';
       html += '<div class="ko-sc-cell">';
@@ -484,7 +503,7 @@ function renderRound2Section(isMe) {
       html += '<div class="team">'+esc(teamB)+'</div>';
       html += '</div>';
     });
- 
+
     if (isMe) {
       html += '<div class="round-save-bar">';
       html += '<span class="round-save-status" id="status-r2-'+stage+'"></span>';
@@ -492,10 +511,10 @@ function renderRound2Section(isMe) {
       html += '</div>';
     }
   });
- 
+
   return html;
 }
- 
+
 // ─── Round 2 save handlers ───────────────────────────────────────────────
 function onR2KoInp(matchId, rowEl) {
   var aEl = rowEl.querySelector('[data-side="a"]');
@@ -520,7 +539,7 @@ function onR2KoInp(matchId, rowEl) {
     });
   }, 800);
 }
- 
+
 function onR2KoWinner(matchId, winner) {
   var existing = myPredsR2[matchId] || {};
   sb.from('predictions').upsert(
@@ -532,16 +551,16 @@ function onR2KoWinner(matchId, winner) {
     toast('R2 winner saved', 'ok');
   });
 }
- 
+
 function saveR2Round(stage) {
   var ids = KO_MATCHES.filter(function(m){return m.stage===stage;}).map(function(m){return m.id;});
   var btn = document.getElementById('btn-save-r2-'+stage);
   var status = document.getElementById('status-r2-'+stage);
- 
+
   ids.forEach(function(id) {
     if (saveTimers['r2_'+id]) { clearTimeout(saveTimers['r2_'+id]); delete saveTimers['r2_'+id]; }
   });
- 
+
   var payload = [];
   var incomplete = 0;
   ids.forEach(function(id) {
@@ -559,15 +578,15 @@ function saveR2Round(stage) {
       incomplete++;
     }
   });
- 
+
   if (!payload.length) {
     if (status) { status.className='round-save-status'; status.textContent='Nothing to save yet.'; }
     return;
   }
- 
+
   if (btn) { btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Saving...'; }
   if (status) { status.className='round-save-status pending'; status.textContent='Saving '+payload.length+'...'; }
- 
+
   sb.from('predictions').upsert(payload, {onConflict:'user_id,match_id,round'}).then(function(r) {
     if (btn) { btn.disabled=false; btn.textContent='Save R2 '+STAGE_LABELS[stage].toLowerCase(); }
     if (r.error) {
@@ -582,7 +601,7 @@ function saveR2Round(stage) {
     toast('R2 round saved ('+payload.length+')', 'ok');
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // SAVE – GROUP STAGE
 // ─────────────────────────────────────────────────────────────
@@ -610,7 +629,7 @@ function onInp(matchId,rowEl){
     });
   },800);
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // SAVE – KNOCKOUT
 // ─────────────────────────────────────────────────────────────
@@ -637,7 +656,7 @@ function onKoInp(matchId,rowEl){
     });
   },800);
 }
- 
+
 function onKoWinner(matchId,winner){
   var existing=myPreds[matchId]||{};
   sb.from('predictions').upsert(
@@ -649,7 +668,7 @@ function onKoWinner(matchId,winner){
     toast('Winner saved','ok');
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // SAVE A WHOLE ROUND AT ONCE  (manual Save button)
 // Reads every input currently on screen for the given stage,
@@ -659,18 +678,18 @@ function matchesForStage(stage){
   if(stage==='group')return GROUP_MATCHES.map(function(m){return m.id;});
   return KO_MATCHES.filter(function(m){return m.stage===stage;}).map(function(m){return m.id;});
 }
- 
+
 function saveRound(stage){
   var ids=matchesForStage(stage);
   var btn=document.getElementById('btn-save-'+stage);
   var status=document.getElementById('status-'+stage);
- 
+
   // Cancel pending auto-save timers for this round (we're saving now instead)
   ids.forEach(function(id){
     if(saveTimers[id]){clearTimeout(saveTimers[id]);delete saveTimers[id];}
     if(saveTimers['ko_'+id]){clearTimeout(saveTimers['ko_'+id]);delete saveTimers['ko_'+id];}
   });
- 
+
   // Read live values straight from the inputs on screen, so we catch anything
   // typed in the last fraction of a second before the auto-save fired.
   var payload=[];
@@ -691,15 +710,15 @@ function saveRound(stage){
       incomplete++;
     }
   });
- 
+
   if(!payload.length){
     if(status){status.className='round-save-status';status.textContent='Nothing to save yet — fill in some scores first.';}
     return;
   }
- 
+
   if(btn){btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Saving...';}
   if(status){status.className='round-save-status pending';status.textContent='Saving '+payload.length+' prediction'+(payload.length===1?'':'s')+'...';}
- 
+
   sb.from('predictions').upsert(payload,{onConflict:'user_id,match_id,round'}).then(function(r){
     if(btn){btn.disabled=false;btn.textContent='Save '+(stage==='group'?'group stage':STAGE_LABELS[stage].toLowerCase());}
     if(r.error){
@@ -714,7 +733,7 @@ function saveRound(stage){
     toast('Round saved ('+payload.length+')','ok');
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // LEADERBOARD
 // ─────────────────────────────────────────────────────────────
@@ -774,7 +793,7 @@ function loadMoreLb(){
     .range(lbOffset,lbOffset+LB_PAGE-1)
     .then(function(r){lbData=lbData.concat(r.data||[]);lbOffset=lbData.length;renderLb();});
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // GROUPS
 // ─────────────────────────────────────────────────────────────
@@ -862,7 +881,7 @@ function leaveGroup(gid){
     renderGroups();
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // BROWSE MODAL
 // ─────────────────────────────────────────────────────────────
@@ -924,11 +943,13 @@ function selectUser(uid,name){
   closeModal();
   if(uid===me.id){
     viewedUid=null;
+    viewedName='';
     var myName=(myProfile&&myProfile.display_name)||me.email.split('@')[0];
     document.getElementById('viewer-name').textContent=myName;
     renderPredict();return;
   }
   viewedUid=uid;
+  viewedName=name;
   document.getElementById('viewer-name').textContent=name;
   document.getElementById('panel-predict').innerHTML='<div class="panel-load"><div class="spinner"></div> Loading predictions...</div>';
   Promise.all([
@@ -942,7 +963,7 @@ function selectUser(uid,name){
     renderPredict();
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // ADMIN
 // ─────────────────────────────────────────────────────────────
@@ -1014,7 +1035,7 @@ function renderAdmin(){
   document.getElementById('panel-admin').innerHTML=html;
 }
 function setAdmTab(tab){currentAdmTab=tab;renderAdmin();}
- 
+
 function enterResult(matchId){
   var a=parseInt((document.getElementById('ra_'+matchId+'_a')||{}).value,10);
   var b=parseInt((document.getElementById('ra_'+matchId+'_b')||{}).value,10);
@@ -1036,7 +1057,7 @@ function enterResult(matchId){
     });
   });
 }
- 
+
 function enterKoResult(matchId,teamA,teamB){
   var a=parseInt((document.getElementById('ra_'+matchId+'_a')||{}).value,10);
   var b=parseInt((document.getElementById('ra_'+matchId+'_b')||{}).value,10);
@@ -1056,7 +1077,7 @@ function enterKoResult(matchId,teamA,teamB){
     toast('KO result saved','ok');
   });
 }
- 
+
 // ─────────────────────────────────────────────────────────────
 // RULES
 // ─────────────────────────────────────────────────────────────
@@ -1098,6 +1119,5 @@ function renderRules(){
     '</div>'
   ].join('');
 }
- 
+
 init();
- 
