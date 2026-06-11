@@ -41,28 +41,11 @@ function loadNotesForMatch(matchId) {
   state.loading = true;
   renderNotesPanel(matchId);
 
-  // Load notes for this match in this group, plus replies and likes for each note
+  // Don't embed profiles in the SELECT — match_notes has TWO FKs to profiles
+  // (user_id and target_user_id), so PostgREST throws "more than one relationship".
+  // Instead, fetch raw notes, then look up display names manually.
   sb.from('match_notes')
-    .select('id,user_id,body,created_at,target_user_id,profiles!match_notes_user_id_fkey(display_name),target:profiles!match_notes_target_user_id_fkey(display_name)')
-    .eq('match_id', matchId)
-    .eq('group_id', state.groupId)
-    .order('created_at', { ascending: false })
-    .then(function(r) {
-      if (r.error) {
-        // The named-FK join syntax above may fail on older Supabase setups.
-        // Fall back to two simpler queries.
-        loadNotesFallback(matchId);
-        return;
-      }
-      finishLoadNotes(matchId, r.data || []);
-    });
-}
-
-// Fallback if the named-FK join isn't available — just fetch without target name
-function loadNotesFallback(matchId) {
-  var state = notesState[matchId];
-  sb.from('match_notes')
-    .select('id,user_id,body,created_at,target_user_id,profiles(display_name)')
+    .select('id,user_id,body,created_at,target_user_id')
     .eq('match_id', matchId)
     .eq('group_id', state.groupId)
     .order('created_at', { ascending: false })
@@ -71,18 +54,33 @@ function loadNotesFallback(matchId) {
         state.loading = false;
         state.notes = [];
         renderNotesPanel(matchId);
-        toast('Failed to load notes', 'err');
+        toast('Failed to load notes: ' + r.error.message, 'err');
         return;
       }
-      // Resolve target display names manually from league members
       var notes = r.data || [];
-      var targetIds = [...new Set(notes.filter(function(n){return n.target_user_id;}).map(function(n){return n.target_user_id;}))];
-      if (!targetIds.length) { finishLoadNotes(matchId, notes); return; }
-      sb.from('profiles').select('id,display_name').in('id', targetIds).then(function(pr) {
+      if (!notes.length) {
+        state.notes = [];
+        state.loading = false;
+        renderNotesPanel(matchId);
+        return;
+      }
+
+      // Collect ALL distinct user ids needed (authors + targets)
+      var allIds = {};
+      notes.forEach(function(n) {
+        if (n.user_id) allIds[n.user_id] = true;
+        if (n.target_user_id) allIds[n.target_user_id] = true;
+      });
+      var ids = Object.keys(allIds);
+
+      sb.from('profiles').select('id,display_name').in('id', ids).then(function(pr) {
         var byId = {};
-        (pr.data||[]).forEach(function(p){ byId[p.id] = p.display_name; });
+        (pr.data || []).forEach(function(p) { byId[p.id] = p.display_name; });
         notes.forEach(function(n) {
-          if (n.target_user_id) n.target = { display_name: byId[n.target_user_id] || 'Player' };
+          n.profiles = { display_name: byId[n.user_id] || 'Player' };
+          if (n.target_user_id) {
+            n.target = { display_name: byId[n.target_user_id] || 'Player' };
+          }
         });
         finishLoadNotes(matchId, notes);
       });
@@ -99,20 +97,39 @@ function finishLoadNotes(matchId, notes) {
   }
   var noteIds = notes.map(function(n) { return n.id; });
   Promise.all([
-    sb.from('note_replies').select('id,note_id,user_id,body,created_at,profiles(display_name)').in('note_id', noteIds).order('created_at'),
+    sb.from('note_replies').select('id,note_id,user_id,body,created_at').in('note_id', noteIds).order('created_at'),
     sb.from('note_likes').select('note_id,user_id').in('note_id', noteIds)
   ]).then(function(rs) {
     var replies = rs[0].data || [];
     var likes = rs[1].data || [];
-    notes.forEach(function(n) {
-      n.replies = replies.filter(function(rp) { return rp.note_id === n.id; });
-      var noteLikes = likes.filter(function(l) { return l.note_id === n.id; });
-      n.likeCount = noteLikes.length;
-      n.likedByMe = noteLikes.some(function(l) { return l.user_id === me.id; });
-    });
-    state.notes = notes;
-    state.loading = false;
-    renderNotesPanel(matchId);
+
+    // Look up reply authors' names (note_replies has only one FK to profiles, so the embed
+    // would be fine — but keeping things consistent by looking up manually too)
+    var replyUserIds = [...new Set(replies.map(function(r){return r.user_id;}))];
+    var attach = function(repliesWithNames) {
+      notes.forEach(function(n) {
+        n.replies = repliesWithNames.filter(function(rp) { return rp.note_id === n.id; });
+        var noteLikes = likes.filter(function(l) { return l.note_id === n.id; });
+        n.likeCount = noteLikes.length;
+        n.likedByMe = noteLikes.some(function(l) { return l.user_id === me.id; });
+      });
+      state.notes = notes;
+      state.loading = false;
+      renderNotesPanel(matchId);
+    };
+
+    if (!replyUserIds.length) {
+      attach(replies);
+    } else {
+      sb.from('profiles').select('id,display_name').in('id', replyUserIds).then(function(pr) {
+        var byId = {};
+        (pr.data || []).forEach(function(p) { byId[p.id] = p.display_name; });
+        replies.forEach(function(rp) {
+          rp.profiles = { display_name: byId[rp.user_id] || 'Player' };
+        });
+        attach(replies);
+      });
+    }
   }).catch(function() {
     state.loading = false;
     renderNotesPanel(matchId);
@@ -258,11 +275,14 @@ function postNote(matchId) {
   }
 
   sb.from('match_notes').insert(payload)
-    .select('id,user_id,body,created_at,target_user_id,profiles(display_name)')
+    .select('id,user_id,body,created_at,target_user_id')
     .single()
     .then(function(r) {
       if (r.error) { toast('Post failed: ' + r.error.message, 'err'); return; }
       var newNote = r.data;
+      // Attach the author's display name (it's me posting)
+      var myName = (myProfile && myProfile.display_name) || (me.email ? me.email.split('@')[0] : 'Me');
+      newNote.profiles = { display_name: myName };
       newNote.replies = [];
       newNote.likeCount = 0;
       newNote.likedByMe = false;
@@ -354,8 +374,11 @@ function postReply(noteId, matchId) {
     note_id: noteId,
     user_id: me.id,
     body:    body
-  }).select('id,note_id,user_id,body,created_at,profiles(display_name)').single().then(function(r) {
+  }).select('id,note_id,user_id,body,created_at').single().then(function(r) {
     if (r.error) { toast('Reply failed: ' + r.error.message, 'err'); return; }
+    // Attach the reply author's name (it's me)
+    var myName = (myProfile && myProfile.display_name) || (me.email ? me.email.split('@')[0] : 'Me');
+    r.data.profiles = { display_name: myName };
     var state = notesState[matchId];
     if (state) {
       var note = state.notes.find(function(n){ return n.id === noteId; });
