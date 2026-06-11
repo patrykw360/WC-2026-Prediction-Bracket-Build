@@ -277,39 +277,7 @@ function renderPredict(){
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
   }).length;
 
-  // ── Tournament-started global lock banner ──
-  if (isMe && R1_GLOBAL_LOCK) {
-    html += '<div style="background:linear-gradient(135deg,#7a2a1e 0%,#a83a2a 100%);color:#fff;padding:12px 18px;font-size:13px;line-height:1.5;border-bottom:1px solid var(--border)">' +
-              '<strong style="font-family:var(--fh);font-size:14px;letter-spacing:.3px">🔒 Round 1 predictions are locked</strong><br>' +
-              '<span style="opacity:.92">The tournament has started — your Round 1 picks are final. Round 2 picks (against the real bracket) will open automatically once the group stage ends.</span>' +
-            '</div>';
-  }
-
-  // ── Late-joiner banner ──
-  // Detect: user looking at their own predictions, AND there's at least one
-  // locked match they didn't fill in, AND at least one upcoming match they can still fill.
-  // (Hidden when R1_GLOBAL_LOCK is on, because then there's no "upcoming" to predict.)
-  if (isMe && !R1_GLOBAL_LOCK) {
-    var lockedMissed = 0;
-    var upcomingOpen = 0;
-    var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
-    allMatches.forEach(function(m) {
-      var p = preds[m.id];
-      var hasP = p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
-      if (isLocked(m.ko)) {
-        if (!hasP) lockedMissed++;
-      } else {
-        if (!hasP) upcomingOpen++;
-      }
-    });
-    if (lockedMissed > 0 && upcomingOpen > 0) {
-      html += '<div class="late-joiner-banner">' +
-                '<strong style="font-size:14px">🕒 You can still join in!</strong><br>' +
-                '<span style="opacity:.92">' + lockedMissed + ' match' + (lockedMissed===1?'':'es') + ' already kicked off — those show the actual results and earn no points. You still have <strong>' + upcomingOpen + ' upcoming match' + (upcomingOpen===1?'':'es') + '</strong> you can predict (and your knockout bracket will use real teams).' +
-                '</span>' +
-              '</div>';
     }
-  }
 
   // ── Group stage completion banner ──
   if (isMe && groupFilled === GROUP_MATCHES.length) {
