@@ -46,7 +46,6 @@ function scoreP(pa,pb,ra,rb){
 function tend(a,b){if(a===null||b===null)return '';if(a>b)return 'A';if(a===b)return 'D';return 'B';}
 // Set to true to lock every R1 prediction across the board (tournament has started).
 // Round 2 picks (made after group stage ends, against real matchups) are unaffected.
-var R1_GLOBAL_LOCK = true;
 function isLocked(ko){
   // Global lock: once flipped to true, ALL round-1 predictions are locked
   // regardless of individual match kickoff. Set this when the tournament starts
