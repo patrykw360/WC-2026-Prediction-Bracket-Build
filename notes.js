@@ -43,7 +43,26 @@ function loadNotesForMatch(matchId) {
 
   // Load notes for this match in this group, plus replies and likes for each note
   sb.from('match_notes')
-    .select('id,user_id,body,created_at,profiles(display_name)')
+    .select('id,user_id,body,created_at,target_user_id,profiles!match_notes_user_id_fkey(display_name),target:profiles!match_notes_target_user_id_fkey(display_name)')
+    .eq('match_id', matchId)
+    .eq('group_id', state.groupId)
+    .order('created_at', { ascending: false })
+    .then(function(r) {
+      if (r.error) {
+        // The named-FK join syntax above may fail on older Supabase setups.
+        // Fall back to two simpler queries.
+        loadNotesFallback(matchId);
+        return;
+      }
+      finishLoadNotes(matchId, r.data || []);
+    });
+}
+
+// Fallback if the named-FK join isn't available — just fetch without target name
+function loadNotesFallback(matchId) {
+  var state = notesState[matchId];
+  sb.from('match_notes')
+    .select('id,user_id,body,created_at,target_user_id,profiles(display_name)')
     .eq('match_id', matchId)
     .eq('group_id', state.groupId)
     .order('created_at', { ascending: false })
@@ -55,36 +74,49 @@ function loadNotesForMatch(matchId) {
         toast('Failed to load notes', 'err');
         return;
       }
+      // Resolve target display names manually from league members
       var notes = r.data || [];
-      if (!notes.length) {
-        state.notes = [];
-        state.loading = false;
-        renderNotesPanel(matchId);
-        return;
-      }
-      var noteIds = notes.map(function(n) { return n.id; });
-      // Load replies + likes in parallel
-      Promise.all([
-        sb.from('note_replies').select('id,note_id,user_id,body,created_at,profiles(display_name)').in('note_id', noteIds).order('created_at'),
-        sb.from('note_likes').select('note_id,user_id').in('note_id', noteIds)
-      ]).then(function(rs) {
-        var replies = rs[0].data || [];
-        var likes = rs[1].data || [];
-        // Attach replies + likes to their notes
+      var targetIds = [...new Set(notes.filter(function(n){return n.target_user_id;}).map(function(n){return n.target_user_id;}))];
+      if (!targetIds.length) { finishLoadNotes(matchId, notes); return; }
+      sb.from('profiles').select('id,display_name').in('id', targetIds).then(function(pr) {
+        var byId = {};
+        (pr.data||[]).forEach(function(p){ byId[p.id] = p.display_name; });
         notes.forEach(function(n) {
-          n.replies = replies.filter(function(rp) { return rp.note_id === n.id; });
-          var noteLikes = likes.filter(function(l) { return l.note_id === n.id; });
-          n.likeCount = noteLikes.length;
-          n.likedByMe = noteLikes.some(function(l) { return l.user_id === me.id; });
+          if (n.target_user_id) n.target = { display_name: byId[n.target_user_id] || 'Player' };
         });
-        state.notes = notes;
-        state.loading = false;
-        renderNotesPanel(matchId);
-      }).catch(function() {
-        state.loading = false;
-        renderNotesPanel(matchId);
+        finishLoadNotes(matchId, notes);
       });
     });
+}
+
+function finishLoadNotes(matchId, notes) {
+  var state = notesState[matchId];
+  if (!notes.length) {
+    state.notes = [];
+    state.loading = false;
+    renderNotesPanel(matchId);
+    return;
+  }
+  var noteIds = notes.map(function(n) { return n.id; });
+  Promise.all([
+    sb.from('note_replies').select('id,note_id,user_id,body,created_at,profiles(display_name)').in('note_id', noteIds).order('created_at'),
+    sb.from('note_likes').select('note_id,user_id').in('note_id', noteIds)
+  ]).then(function(rs) {
+    var replies = rs[0].data || [];
+    var likes = rs[1].data || [];
+    notes.forEach(function(n) {
+      n.replies = replies.filter(function(rp) { return rp.note_id === n.id; });
+      var noteLikes = likes.filter(function(l) { return l.note_id === n.id; });
+      n.likeCount = noteLikes.length;
+      n.likedByMe = noteLikes.some(function(l) { return l.user_id === me.id; });
+    });
+    state.notes = notes;
+    state.loading = false;
+    renderNotesPanel(matchId);
+  }).catch(function() {
+    state.loading = false;
+    renderNotesPanel(matchId);
+  });
 }
 
 function renderNotesPanel(matchId) {
@@ -112,12 +144,21 @@ function renderNotesPanel(matchId) {
   }
 
   // Compose box
+  var targetUid = state.composeTarget || null;
+  var targetName = state.composeTargetName || null;
   html += '<div style="padding:10px 14px;background:#f8f9fc;border-bottom:1px solid var(--border)">';
-  html += '<textarea id="note-input-'+matchId+'" placeholder="Say something about this match..." maxlength="140" rows="2" oninput="updateNoteCharCount(\''+matchId+'\')" ';
+  if (targetUid && targetName) {
+    html += '<div style="background:#fff8e1;border:1px solid #ffd54f;border-radius:6px;padding:5px 10px;margin-bottom:6px;font-size:11px;color:#856404;display:flex;align-items:center;justify-content:space-between">';
+    html += '<span>💬 Commenting on <strong>'+esc(targetName)+'</strong>\'s pick</span>';
+    html += '<button onclick="clearComposeTarget(\''+matchId+'\')" style="background:none;border:none;cursor:pointer;color:#856404;font-size:14px;line-height:1;padding:0 4px" title="Cancel">×</button>';
+    html += '</div>';
+  }
+  var placeholder = targetUid ? 'Comment on '+targetName+'\'s pick...' : 'Say something about this match...';
+  html += '<textarea id="note-input-'+matchId+'" placeholder="'+esc(placeholder)+'" maxlength="140" rows="2" oninput="updateNoteCharCount(\''+matchId+'\')" ';
   html += 'style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-family:var(--fb);font-size:13px;resize:vertical;outline:none;background:#fff;line-height:1.4"></textarea>';
   html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">';
   html += '<span id="note-char-'+matchId+'" style="font-size:11px;color:var(--muted)">140</span>';
-  html += '<button onclick="postNote(\''+matchId+'\')" style="font-family:var(--fh);font-size:12px;font-weight:700;padding:5px 14px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer">Post</button>';
+  html += '<button onclick="postNote(\''+matchId+'\')" style="font-family:var(--fh);font-size:12px;font-weight:700;padding:5px 14px;background:'+(targetUid?'#c9a227':'var(--navy)')+';color:#fff;border:none;border-radius:6px;cursor:pointer">'+(targetUid?'Post comment':'Post')+'</button>';
   html += '</div>';
   html += '</div>';
 
@@ -137,6 +178,11 @@ function renderNotesPanel(matchId) {
       html += '<div style="width:30px;height:30px;border-radius:50%;background:var(--navy2);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fh);font-size:11px;font-weight:700;flex-shrink:0">'+initials+'</div>';
       html += '<div style="flex:1;min-width:0">';
       html += '<div style="font-size:12px;margin-bottom:3px"><strong>'+esc(authorName)+'</strong>'+(isMine?' <span style="color:var(--muted);font-size:10px">(you)</span>':'')+' <span style="color:var(--muted);font-size:10px">· '+when+'</span></div>';
+      if (n.target_user_id) {
+        var targetDisplay = (n.target && n.target.display_name) || 'a league-mate';
+        var targetIsMe = n.target_user_id === me.id;
+        html += '<div style="display:inline-block;background:#fff3cd;border:1px solid #ffd54f;border-radius:4px;padding:1px 6px;font-size:10px;color:#856404;margin-bottom:4px">→ on '+esc(targetDisplay)+(targetIsMe?' (you)':'')+'\'s pick</div>';
+      }
       html += '<div style="font-size:13px;line-height:1.4;color:var(--text);word-wrap:break-word">'+esc(n.body)+'</div>';
       html += '<div style="display:flex;gap:14px;margin-top:6px;font-size:11px;color:var(--muted)">';
       html += '<button onclick="toggleLike(\''+n.id+'\', \''+matchId+'\')" style="background:none;border:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px;padding:0;font-size:11px;color:'+(n.likedByMe?'#e74c3c':'var(--muted)')+';font-weight:'+(n.likedByMe?'600':'400')+'">'+(n.likedByMe?'♥':'♡')+' '+(n.likeCount || 0)+'</button>';
@@ -201,23 +247,79 @@ function postNote(matchId) {
   var state = notesState[matchId];
   if (!state || !state.groupId) { toast('Pick a league first', 'err'); return; }
 
-  sb.from('match_notes').insert({
+  var payload = {
     match_id: matchId,
     group_id: state.groupId,
     user_id:  me.id,
     body:     body
-  }).select('id,user_id,body,created_at,profiles(display_name)').single().then(function(r) {
-    if (r.error) { toast('Post failed: ' + r.error.message, 'err'); return; }
-    var newNote = r.data;
-    newNote.replies = [];
-    newNote.likeCount = 0;
-    newNote.likedByMe = false;
-    state.notes.unshift(newNote);
-    ta.value = '';
-    updateNoteCharCount(matchId);
+  };
+  if (state.composeTarget && state.composeTarget !== me.id) {
+    payload.target_user_id = state.composeTarget;
+  }
+
+  sb.from('match_notes').insert(payload)
+    .select('id,user_id,body,created_at,target_user_id,profiles(display_name)')
+    .single()
+    .then(function(r) {
+      if (r.error) { toast('Post failed: ' + r.error.message, 'err'); return; }
+      var newNote = r.data;
+      newNote.replies = [];
+      newNote.likeCount = 0;
+      newNote.likedByMe = false;
+      // Attach target name if compose was targeted
+      if (newNote.target_user_id && state.composeTargetName) {
+        newNote.target = { display_name: state.composeTargetName };
+      }
+      state.notes.unshift(newNote);
+      ta.value = '';
+      // Clear compose target after posting — next post defaults to general
+      state.composeTarget = null;
+      state.composeTargetName = null;
+      updateNoteCharCount(matchId);
+      renderNotesPanel(matchId);
+      toast(payload.target_user_id ? 'Comment posted' : 'Posted', 'ok');
+    });
+}
+
+function clearComposeTarget(matchId) {
+  var state = notesState[matchId];
+  if (!state) return;
+  state.composeTarget = null;
+  state.composeTargetName = null;
+  renderNotesPanel(matchId);
+}
+
+// Public API: open the notes panel on a match, pre-set to comment on a specific user's pick.
+// Called from the league-mate predictions view when you click the "Comment on this pick" button.
+function openPredictionComment(matchId, targetUid, targetName, groupId) {
+  if (!notesState[matchId]) {
+    notesState[matchId] = { open: true, notes: [], loading: false, groupId: groupId || defaultGroupForNotes() };
+  }
+  var state = notesState[matchId];
+  state.open = true;
+  state.composeTarget = targetUid;
+  state.composeTargetName = targetName;
+  // If a group is specified, use it (e.g. when commenting from inside a league context)
+  if (groupId) state.groupId = groupId;
+
+  // Make the panel visible
+  var panel = document.getElementById('notes-panel-' + matchId);
+  if (panel) panel.style.display = '';
+
+  // Load notes (or re-render if already loaded)
+  if (!state.notes.length && !state.loading) {
+    loadNotesForMatch(matchId);
+  } else {
     renderNotesPanel(matchId);
-    toast('Posted', 'ok');
-  });
+  }
+
+  // Scroll into view + focus textarea
+  setTimeout(function() {
+    var p = document.getElementById('notes-panel-' + matchId);
+    if (p) p.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    var ta = document.getElementById('note-input-' + matchId);
+    if (ta) ta.focus();
+  }, 80);
 }
 
 function deleteNote(noteId, matchId) {
