@@ -199,6 +199,43 @@ function setupRealtime(){
 // ─────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────
+// Standings auto-refresh timer (30s) — only runs while user is on the Standings tab
+var lbPollTimer = null;
+
+function startStandingsPoll() {
+  stopStandingsPoll(); // safety: never stack timers
+  lbPollTimer = setInterval(function() {
+    // Only refresh if the standings tab is actually visible — extra guard against stuck timers
+    var stillOnTab = document.querySelector('.tab.active[data-tab=leaderboard]');
+    if (!stillOnTab) { stopStandingsPoll(); return; }
+    // Silently refresh without showing the spinner (preserve scroll position)
+    silentRefreshLb();
+  }, 30000);
+}
+
+function stopStandingsPoll() {
+  if (lbPollTimer) { clearInterval(lbPollTimer); lbPollTimer = null; }
+}
+
+function silentRefreshLb() {
+  // Re-fetch the leaderboard rows without flashing the spinner.
+  // Replicates loadAndRenderLb but skips the loading-state UI.
+  if (lbMode === 'group' && lbGroupId) {
+    sb.from('group_members').select('user_id').eq('group_id', lbGroupId).then(function(r) {
+      var uids = (r.data||[]).map(function(x){ return x.user_id; });
+      if (!uids.length) { lbData = []; renderLb(); return; }
+      sb.from('leaderboard').select('*').in('user_id', uids)
+        .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
+        .then(function(r2) { lbData = r2.data || []; lbOffset = lbData.length; renderLb(); });
+    });
+  } else {
+    sb.from('leaderboard').select('*')
+      .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
+      .range(0, Math.max(LB_PAGE, lbOffset) - 1)
+      .then(function(r) { lbData = r.data || []; lbOffset = lbData.length; renderLb(); });
+  }
+}
+
 function switchTab(el){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
   el.classList.add('active');
@@ -211,7 +248,14 @@ function switchTab(el){
   var vp=document.getElementById('viewer-prog');
   vb.style.display=tab==='predict'?'':'none';
   vp.style.display=tab==='predict'?'':'none';
-  if(tab==='leaderboard'){lbData=[];lbOffset=0;loadAndRenderLb();}
+  // Manage the standings poll: start on entering, stop on leaving
+  if (tab === 'leaderboard') {
+    lbData=[]; lbOffset=0;
+    loadAndRenderLb();
+    startStandingsPoll();
+  } else {
+    stopStandingsPoll();
+  }
   if(tab==='groups')renderGroups();
   if(tab==='awards')loadAwards();
   if(tab==='results')renderResults();
@@ -1176,7 +1220,7 @@ function renderRules(){
     '<tr><td><strong>Wrong tendency</strong></td><td><span class="bdg" style="background:#bdc3c7">0</span></td><td style="color:#999">Predict 1-0, result 0-1</td></tr>',
     '</tbody></table></div>',
     '<div class="rules-sec"><h3>When do points appear on the leaderboard?</h3>',
-    '<p class="rules-note">Results are entered as matches finish, but they don\'t show on the leaderboard immediately. Instead, all points from a given day drop together <strong>at midnight Pacific Time</strong> (Los Angeles). So if matches happen across June 14 (LA time), those points appear on June 15. This keeps the standings clean and avoids constant live updates during games.</p></div>',
+    '<p class="rules-note">Points appear as soon as the admin enters a result. The standings tab refreshes automatically as new results come in (every 30 seconds, or instantly if you have the page open when results are saved).</p></div>',
     '<div class="rules-sec"><h3>Contrarian Multiplier</h3>',
     '<p class="rules-note">After kickoff, points are multiplied based on how many players picked the same winner. Going against the majority and being right earns extra points.</p>',
     '<table class="rt"><thead><tr><th>% who picked the winning tendency</th><th>Multiplier</th></tr></thead><tbody>',
