@@ -55,6 +55,18 @@ function dismissWelcome(){
   var el=document.getElementById('welcome-banner');
   if(el)el.style.display='none';
 }
+function notesRowHtml(matchId, isMe){
+  // Render the collapsed "💬 Notes" toggle + the (hidden) panel.
+  // Only show if user is in at least one league.
+  if(!isMe || !myGroups.length) return '';
+  return '<div class="notes-row" style="border-bottom:1px solid #f0f2f6;background:#fcfcfd">' +
+           '<button onclick="toggleNotes(\''+matchId+'\')" style="width:100%;text-align:left;padding:6px 14px;background:none;border:none;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;font-family:var(--fb)">' +
+             '<span style="color:var(--blue);font-weight:600">💬 Notes</span>' +
+             '<span style="color:#bbb;font-size:10px">(click to open / post for your league)</span>' +
+           '</button>' +
+           '<div id="notes-panel-'+matchId+'" style="display:none;border-top:1px solid var(--border)"></div>' +
+         '</div>';
+}
 
 // ─────────────────────────────────────────────────────────────
 // AUTH
@@ -162,8 +174,9 @@ function switchTab(el){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
   el.classList.add('active');
   var tab=el.dataset.tab;
-  ['predict','leaderboard','groups','admin','rules'].forEach(function(t){
-    document.getElementById('panel-'+t).style.display=t===tab?'':'none';
+  ['predict','leaderboard','awards','groups','admin','rules'].forEach(function(t){
+    var p=document.getElementById('panel-'+t);
+    if(p)p.style.display=t===tab?'':'none';
   });
   var vb=document.getElementById('viewer-bar');
   var vp=document.getElementById('viewer-prog');
@@ -171,6 +184,7 @@ function switchTab(el){
   vp.style.display=tab==='predict'?'':'none';
   if(tab==='leaderboard'){lbData=[];lbOffset=0;loadAndRenderLb();}
   if(tab==='groups')renderGroups();
+  if(tab==='awards')loadAwards();
   if(tab==='admin'&&myProfile&&myProfile.is_admin)renderAdmin();
 }
 
@@ -257,6 +271,7 @@ function renderPredict(){
       html+='</div>';
       html+='<div class="team">'+esc(m.b)+'</div>';
       html+='</div>';
+      html+=notesRowHtml(m.id, isMe);
     });
   });
 
@@ -339,6 +354,7 @@ function renderPredict(){
       html+='</div>';
       html+='<div class="team">'+esc(teamB)+'</div>';
       html+='</div>';
+      html+=notesRowHtml(m.id, isMe);
     });
     // Save button for this knockout round
     if(isMe){
@@ -1073,6 +1089,10 @@ function renderRules(){
     '<p class="rules-note">All inputs lock automatically at scheduled kickoff. League-mates can see each other\'s picks anytime; users outside your league can\'t.</p></div>',
     '<div class="rules-sec"><h3>Tiebreaker</h3>',
     '<p class="rules-note">Equal points → most exact scores wins. Still tied → most correct goal differences.</p></div>',
+    '<div class="rules-sec"><h3>Tournament Awards (NEW)</h3>',
+    '<p class="rules-note">Predict the three big individual awards: <strong>Golden Ball</strong> (best player), <strong>Golden Boot</strong> (top scorer), and <strong>Golden Glove</strong> (best goalkeeper). Each correct pick is worth <strong>8 points</strong> and stacks on top of your match points. Award picks lock when the tournament starts on June 11. Player rosters are loaded after FIFA confirms the final 26-man squads (~5 days before kickoff).</p></div>',
+    '<div class="rules-sec"><h3>Match Notes (NEW)</h3>',
+    '<p class="rules-note">Each match has a notes section under the score. Drop a 140-character take ("Ronaldo for a hat-trick" / "Brazil collapse incoming") that\'s visible to your league-mates only. They can reply and like. Notes stay open before, during, and after the match.</p></div>',
     '<div class="rules-sec"><h3>Leagues</h3>',
     '<p class="rules-note">Create a private league and share the 6-letter join code with friends. You appear on both your league\'s leaderboard and the global leaderboard. Leagues support 2–20 players.</p></div>',
     '</div>'
