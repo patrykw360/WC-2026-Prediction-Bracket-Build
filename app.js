@@ -9,7 +9,7 @@
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
-var viewedUid=null, viewedPreds={}, viewedPredsR2={}, viewedName='';
+var viewedUid=null, viewedPreds={}, viewedPredsR2={};
 var lbData=[], lbOffset=0, lbMode='global', lbGroupId=null;
 var myGroups=[];
 var tournamentState={round2_open:false, group_results_entered:0, group_matches_total:72};
@@ -44,16 +44,7 @@ function scoreP(pa,pb,ra,rb){
   return 0;
 }
 function tend(a,b){if(a===null||b===null)return '';if(a>b)return 'A';if(a===b)return 'D';return 'B';}
-// Set to true to lock every R1 prediction across the board (tournament has started).
-// Round 2 picks (made after group stage ends, against real matchups) are unaffected.
-var R1_GLOBAL_LOCK = true;
-function isLocked(ko){
-  // Global lock: once flipped to true, ALL round-1 predictions are locked
-  // regardless of individual match kickoff. Set this when the tournament starts
-  // to freeze every user's R1 picks. Round 2 saves use a separate path.
-  if (R1_GLOBAL_LOCK) return true;
-  return ko && new Date(ko) < new Date();
-}
+function isLocked(ko){return ko&&new Date(ko)<new Date();}
 function fmtKO(iso){
   if(!iso)return '';
   var d=new Date(iso);
@@ -63,35 +54,6 @@ function dismissWelcome(){
   try{ localStorage.setItem('wc26_welcome_dismissed','1'); }catch(e){}
   var el=document.getElementById('welcome-banner');
   if(el)el.style.display='none';
-}
-function notesRowHtml(matchId, isMe){
-  // Render the collapsed "💬 Notes" toggle + the (hidden) panel.
-  // Only show if user is in at least one league.
-  if(!isMe || !myGroups.length) return '';
-  return '<div class="notes-row" style="border-bottom:1px solid #f0f2f6;background:#fcfcfd">' +
-           '<button onclick="toggleNotes(\''+matchId+'\')" style="width:100%;text-align:left;padding:6px 14px;background:none;border:none;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;font-family:var(--fb)">' +
-             '<span style="color:var(--blue);font-weight:600">💬 Notes</span>' +
-             '<span style="color:#bbb;font-size:10px">(click to open / post for your league)</span>' +
-           '</button>' +
-           '<div id="notes-panel-'+matchId+'" style="display:none;border-top:1px solid var(--border)"></div>' +
-         '</div>';
-}
-// When VIEWING a league-mate's predictions, show a "Comment on this pick" button on matches
-// where they actually have a prediction. Clicking it opens the notes panel in compose-target mode.
-function commentButtonHtml(matchId, hasPrediction){
-  if (viewedUid === null) return '';        // not browsing someone else
-  if (!hasPrediction) return '';            // no pick to comment on
-  if (!myGroups.length) return '';          // not in any league
-  // Build the panel container too — same id pattern as notesRowHtml so the notes module can target it.
-  // The escaped viewedName comes from the global; we look it up at click time via the document.
-  var nameAttr = (typeof viewedName !== 'undefined' && viewedName) ? viewedName.replace(/'/g, "\\'") : 'this player';
-  return '<div class="notes-row" style="border-bottom:1px solid #f0f2f6;background:#fcfcfd">' +
-           '<button onclick="openPredictionComment(\''+matchId+'\', \''+viewedUid+'\', \''+nameAttr+'\')" style="width:100%;text-align:left;padding:6px 14px;background:none;border:none;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px;font-family:var(--fb)">' +
-             '<span style="color:#c9a227;font-weight:600">💬 Comment on this pick</span>' +
-             '<span style="color:#bbb;font-size:10px">(visible to your league)</span>' +
-           '</button>' +
-           '<div id="notes-panel-'+matchId+'" style="display:none;border-top:1px solid var(--border)"></div>' +
-         '</div>';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -188,9 +150,6 @@ function setupRealtime(){
     sb.from('tournament_state').select('*').single().then(function(r){
       if(r&&r.data)tournamentState=r.data;
       renderPredict();
-      // If user is currently looking at the Results tab, refresh it too
-      var resultsTabActive = document.querySelector('.tab.active[data-tab=results]');
-      if (resultsTabActive) renderResults();
     });
     if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
   }).subscribe();
@@ -199,66 +158,19 @@ function setupRealtime(){
 // ─────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────
-// Standings auto-refresh timer (30s) — only runs while user is on the Standings tab
-var lbPollTimer = null;
-
-function startStandingsPoll() {
-  stopStandingsPoll(); // safety: never stack timers
-  lbPollTimer = setInterval(function() {
-    // Only refresh if the standings tab is actually visible — extra guard against stuck timers
-    var stillOnTab = document.querySelector('.tab.active[data-tab=leaderboard]');
-    if (!stillOnTab) { stopStandingsPoll(); return; }
-    // Silently refresh without showing the spinner (preserve scroll position)
-    silentRefreshLb();
-  }, 30000);
-}
-
-function stopStandingsPoll() {
-  if (lbPollTimer) { clearInterval(lbPollTimer); lbPollTimer = null; }
-}
-
-function silentRefreshLb() {
-  // Re-fetch the leaderboard rows without flashing the spinner.
-  // Replicates loadAndRenderLb but skips the loading-state UI.
-  if (lbMode === 'group' && lbGroupId) {
-    sb.from('group_members').select('user_id').eq('group_id', lbGroupId).then(function(r) {
-      var uids = (r.data||[]).map(function(x){ return x.user_id; });
-      if (!uids.length) { lbData = []; renderLb(); return; }
-      sb.from('leaderboard').select('*').in('user_id', uids)
-        .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
-        .then(function(r2) { lbData = r2.data || []; lbOffset = lbData.length; renderLb(); });
-    });
-  } else {
-    sb.from('leaderboard').select('*')
-      .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
-      .range(0, Math.max(LB_PAGE, lbOffset) - 1)
-      .then(function(r) { lbData = r.data || []; lbOffset = lbData.length; renderLb(); });
-  }
-}
-
 function switchTab(el){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
   el.classList.add('active');
   var tab=el.dataset.tab;
-  ['predict','leaderboard','awards','results','groups','admin','rules'].forEach(function(t){
-    var p=document.getElementById('panel-'+t);
-    if(p)p.style.display=t===tab?'':'none';
+  ['predict','leaderboard','groups','admin','rules'].forEach(function(t){
+    document.getElementById('panel-'+t).style.display=t===tab?'':'none';
   });
   var vb=document.getElementById('viewer-bar');
   var vp=document.getElementById('viewer-prog');
   vb.style.display=tab==='predict'?'':'none';
   vp.style.display=tab==='predict'?'':'none';
-  // Manage the standings poll: start on entering, stop on leaving
-  if (tab === 'leaderboard') {
-    lbData=[]; lbOffset=0;
-    loadAndRenderLb();
-    startStandingsPoll();
-  } else {
-    stopStandingsPoll();
-  }
+  if(tab==='leaderboard'){lbData=[];lbOffset=0;loadAndRenderLb();}
   if(tab==='groups')renderGroups();
-  if(tab==='awards')loadAwards();
-  if(tab==='results')renderResults();
   if(tab==='admin'&&myProfile&&myProfile.is_admin)renderAdmin();
 }
 
@@ -266,33 +178,12 @@ function switchTab(el){
 // RENDER PREDICTIONS
 // ─────────────────────────────────────────────────────────────
 function renderPredict(){
-  var rawPreds=viewedUid===null?myPreds:viewedPreds;
+  var preds=viewedUid===null?myPreds:viewedPreds;
   var isMe=viewedUid===null;
   var html='';
   var filled=0, pts=0;
 
-  // ── LATE-JOINER PRE-FILL ──
-  // For any locked match where the user has no prediction but a real result exists,
-  // treat the actual result as their prediction. This gives them the real knockout
-  // bracket (because `buildBracket` now sees actual winners) without awarding points
-  // (handled below — auto-filled rows are flagged and skipped from scoring).
-  // We don't mutate `rawPreds` (which is the canonical state) — we build an overlay.
-  var preds = {};
-  var autoFilled = {};   // matchId -> true  (rows that came from actual results, not user input)
-  Object.keys(rawPreds).forEach(function(k){ preds[k] = rawPreds[k]; });
-  var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
-  allMatches.forEach(function(m) {
-    var r = allResults[m.id];
-    var existing = preds[m.id];
-    var hasExisting = existing && existing.a !== null && existing.a !== undefined && existing.b !== null && existing.b !== undefined;
-    if (isLocked(m.ko) && !hasExisting && r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined) {
-      // Carry the AET winner if the result has one — needed for knockout chaining on draws
-      preds[m.id] = { a: r.goals_a, b: r.goals_b, w: r.winner || null };
-      autoFilled[m.id] = true;
-    }
-  });
-
-  // Build the auto-advanced bracket from this player's (overlaid) predictions
+  // Build the auto-advanced bracket from this player's predictions
   var bracket = buildBracket(preds);
 
   // ── Welcome message (dismissable, only shown to self, only once per browser) ──
@@ -309,8 +200,7 @@ function renderPredict(){
             '<strong>2.</strong> Once you finish the group stage, your Round of 32 will fill in based on YOUR predicted standings.<br>' +
             '<strong>3.</strong> Keep predicting each knockout round — winners chain into the next round.<br>' +
             '<strong>4.</strong> Picks save automatically. The green Save button at the bottom of each round is a backup.<br>' +
-            '<strong>5.</strong> Predictions lock at kickoff. Visit the Standings tab to track how you stack up.<br>' +
-            '<strong>6.</strong> <em>Late to the party?</em> No problem — past matches show the actual result (no points), and your knockout bracket uses real teams. You can still predict any upcoming match.' +
+            '<strong>5.</strong> Predictions lock at kickoff. Visit the Standings tab to track how you stack up.' +
           '</div>' +
         '</div>';
     }
@@ -321,40 +211,6 @@ function renderPredict(){
     var p = preds[m.id];
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
   }).length;
-
-  // ── Tournament-started global lock banner ──
-  if (isMe && R1_GLOBAL_LOCK) {
-    html += '<div style="background:linear-gradient(135deg,#7a2a1e 0%,#a83a2a 100%);color:#fff;padding:12px 18px;font-size:13px;line-height:1.5;border-bottom:1px solid var(--border)">' +
-              '<strong style="font-family:var(--fh);font-size:14px;letter-spacing:.3px">🔒 Round 1 predictions are locked</strong><br>' +
-              '<span style="opacity:.92">The tournament has started — your Round 1 picks are final. Round 2 picks (against the real bracket) will open automatically once the group stage ends.</span>' +
-            '</div>';
-  }
-
-  // ── Late-joiner banner ──
-  // Detect: user looking at their own predictions, AND there's at least one
-  // locked match they didn't fill in, AND at least one upcoming match they can still fill.
-  // (Hidden when R1_GLOBAL_LOCK is on, because then there's no "upcoming" to predict.)
-  if (isMe && !R1_GLOBAL_LOCK) {
-    var lockedMissed = 0;
-    var upcomingOpen = 0;
-    var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
-    allMatches.forEach(function(m) {
-      var p = preds[m.id];
-      var hasP = p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined;
-      if (isLocked(m.ko)) {
-        if (!hasP) lockedMissed++;
-      } else {
-        if (!hasP) upcomingOpen++;
-      }
-    });
-    if (lockedMissed > 0 && upcomingOpen > 0) {
-      html += '<div class="late-joiner-banner">' +
-                '<strong style="font-size:14px">🕒 You can still join in!</strong><br>' +
-                '<span style="opacity:.92">' + lockedMissed + ' match' + (lockedMissed===1?'':'es') + ' already kicked off — those show the actual results and earn no points. You still have <strong>' + upcomingOpen + ' upcoming match' + (upcomingOpen===1?'':'es') + '</strong> you can predict (and your knockout bracket will use real teams).' +
-                '</span>' +
-              '</div>';
-    }
-  }
 
   // ── Group stage completion banner ──
   if (isMe && groupFilled === GROUP_MATCHES.length) {
@@ -376,18 +232,13 @@ function renderPredict(){
       var locked=isLocked(m.ko);
       var pa=pred?pred.a:null, pb=pred?pred.b:null;
       var hasPred=pa!==null&&pb!==null;
-      var isAuto = !!autoFilled[m.id];
       if(hasPred)filled++;
-      // Auto-filled rows: no points awarded, no scoring badge
-      var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
+      var bp=(hasPred&&res)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
       var mult=res?Number(res.multiplier||1):1;
       var fp=bp!==null?Math.round(bp*mult*100)/100:null;
       if(fp!==null)pts+=fp;
       var t=tend(pa,pb);
-      // Late-joiner support: distinguish "you didn't predict" vs "auto-filled with actual result"
-      var lockedNoPred = locked && !hasPred;
-      // Auto-filled rows get a faded look too (it's not really YOUR pick)
-      var rc='match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred&&!isAuto?' has-p':'')+(lockedNoPred||isAuto?' locked-no-pred':'');
+      var rc='match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onInp(\''+m.id+'\',this.closest(\'.match-row\'))"':'';
@@ -401,15 +252,11 @@ function renderPredict(){
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
       if(mult>1&&bp>0)html+='<span class="mx-tag">×'+mult.toFixed(2)+'</span>';
-      if(isAuto) html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
-      else if(lockedNoPred) html+='<span class="locked-badge" title="Kickoff: '+esc(fmtKO(m.ko))+'">🔒 '+esc(fmtKO(m.ko))+'</span>';
-      else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
+      if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
       if(savingSet[m.id])html+='<span class="sv-dot"></span>';
       html+='</div>';
       html+='<div class="team">'+esc(m.b)+'</div>';
       html+='</div>';
-      html+=notesRowHtml(m.id, isMe);
-      html+=commentButtonHtml(m.id, hasPred);
     });
   });
 
@@ -449,14 +296,11 @@ function renderPredict(){
       var locked=isLocked(m.ko);
       var pa=pred?pred.a:null, pb=pred?pred.b:null, pw=pred?pred.w:'';
       var hasPred=pa!==null&&pb!==null;
-      var isAuto = !!autoFilled[m.id];
       if(hasPred)filled++;
-      // Auto-filled: no points awarded
-      var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
+      var bp=(hasPred&&res)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
       var fp=bp!==null?Number(bp):null;
       if(fp!==null)pts+=fp;
-      var lockedNoPred = locked && !hasPred;
-      var rc='ko-match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred&&!isAuto?' has-p':'')+(lockedNoPred||isAuto?' locked-no-pred':'');
+      var rc='ko-match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onKoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"':'';
@@ -473,9 +317,7 @@ function renderPredict(){
       html+='<input type="number" min="0" max="20" value="'+(pb!==null?pb:'')+'" class="s-inp'+(pb!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="b"'+dis+ev+'>';
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
-      if(isAuto)html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
-      else if(lockedNoPred)html+='<span class="locked-badge">🔒 Missed</span>';
-      else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
+      if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
       if(savingSet[m.id])html+='<span class="sv-dot"></span>';
       html+='</div>';
       // Winner pick shown only when prediction is a draw (knockout needs AET winner)
@@ -497,8 +339,6 @@ function renderPredict(){
       html+='</div>';
       html+='<div class="team">'+esc(teamB)+'</div>';
       html+='</div>';
-      html+=notesRowHtml(m.id, isMe);
-      html+=commentButtonHtml(m.id, hasPred);
     });
     // Save button for this knockout round
     if(isMe){
@@ -1068,13 +908,11 @@ function selectUser(uid,name){
   closeModal();
   if(uid===me.id){
     viewedUid=null;
-    viewedName='';
     var myName=(myProfile&&myProfile.display_name)||me.email.split('@')[0];
     document.getElementById('viewer-name').textContent=myName;
     renderPredict();return;
   }
   viewedUid=uid;
-  viewedName=name;
   document.getElementById('viewer-name').textContent=name;
   document.getElementById('panel-predict').innerHTML='<div class="panel-load"><div class="spinner"></div> Loading predictions...</div>';
   Promise.all([
@@ -1220,7 +1058,7 @@ function renderRules(){
     '<tr><td><strong>Wrong tendency</strong></td><td><span class="bdg" style="background:#bdc3c7">0</span></td><td style="color:#999">Predict 1-0, result 0-1</td></tr>',
     '</tbody></table></div>',
     '<div class="rules-sec"><h3>When do points appear on the leaderboard?</h3>',
-    '<p class="rules-note">Points appear as soon as the admin enters a result. The standings tab refreshes automatically as new results come in (every 30 seconds, or instantly if you have the page open when results are saved).</p></div>',
+    '<p class="rules-note">Results are entered as matches finish, but they don\'t show on the leaderboard immediately. Instead, all points from a given day drop together <strong>at midnight Pacific Time</strong> (Los Angeles). So if matches happen across June 14 (LA time), those points appear on June 15. This keeps the standings clean and avoids constant live updates during games.</p></div>',
     '<div class="rules-sec"><h3>Contrarian Multiplier</h3>',
     '<p class="rules-note">After kickoff, points are multiplied based on how many players picked the same winner. Going against the majority and being right earns extra points.</p>',
     '<table class="rt"><thead><tr><th>% who picked the winning tendency</th><th>Multiplier</th></tr></thead><tbody>',
@@ -1233,118 +1071,12 @@ function renderRules(){
     '<p class="rules-note">Predict the scoreline after 90 minutes for every knockout match. If you predict a draw, a dropdown appears to pick who you think wins after extra time / penalties. This counts as a bonus tiebreaker but does <strong>not</strong> affect your 4/3/2/0 score (which is always based on 90 minutes).</p></div>',
     '<div class="rules-sec"><h3>Prediction Lock</h3>',
     '<p class="rules-note">All inputs lock automatically at scheduled kickoff. League-mates can see each other\'s picks anytime; users outside your league can\'t.</p></div>',
-    '<div class="rules-sec"><h3>Joining late</h3>',
-    '<p class="rules-note">You can sign up and start predicting at any point during the tournament. For matches that already kicked off, the site shows the actual result in your predictions list (marked "🕒 Auto · 0 pts") — these earn no points but DO carry through to your knockout bracket, so you get the real R16/QF/etc. matchups. Any upcoming match is fully open for you to predict and score normally.</p></div>',
     '<div class="rules-sec"><h3>Tiebreaker</h3>',
     '<p class="rules-note">Equal points → most exact scores wins. Still tied → most correct goal differences.</p></div>',
-    '<div class="rules-sec"><h3>Tournament Awards (NEW)</h3>',
-    '<p class="rules-note">Predict the three big individual awards: <strong>Golden Ball</strong> (best player), <strong>Golden Boot</strong> (top scorer), and <strong>Golden Glove</strong> (best goalkeeper). Each correct pick is worth <strong>8 points</strong> and stacks on top of your match points. Award picks lock when the tournament starts on June 11. Player rosters are loaded after FIFA confirms the final 26-man squads (~5 days before kickoff).</p></div>',
-    '<div class="rules-sec"><h3>Match Notes (NEW)</h3>',
-    '<p class="rules-note">Each match has a notes section under the score. Drop a 140-character take ("Ronaldo for a hat-trick" / "Brazil collapse incoming") that\'s visible to your league-mates only. They can reply and like. Notes stay open before, during, and after the match.</p></div>',
     '<div class="rules-sec"><h3>Leagues</h3>',
     '<p class="rules-note">Create a private league and share the 6-letter join code with friends. You appear on both your league\'s leaderboard and the global leaderboard. Leagues support 2–20 players.</p></div>',
     '</div>'
   ].join('');
-}
-
-// ─────────────────────────────────────────────────────────────
-// RESULTS TAB — read-only feed of every match's result + status
-// Sorted: completed matches (most recent first) → upcoming by kickoff
-// ─────────────────────────────────────────────────────────────
-function renderResults(){
-  var allMatches = GROUP_MATCHES.concat(KO_MATCHES);
-
-  // Annotate each match with status + sort key
-  var enriched = allMatches.map(function(m){
-    var r = allResults[m.id];
-    var hasResult = r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined;
-    var locked = m.ko && new Date(m.ko) < new Date();
-    var status;
-    if (hasResult) status = 'done';
-    else if (locked) status = 'live';        // kicked off but no result entered yet
-    else status = 'upcoming';
-    var koTime = m.ko ? new Date(m.ko).getTime() : 0;
-    var sortKey;
-    // Order: live first, then completed (most recent kickoff first), then upcoming (soonest first)
-    if (status === 'live')      sortKey = -1000000000000 + (Date.now() - koTime);
-    else if (status === 'done') sortKey = -koTime;            // most-recent kickoff first
-    else                        sortKey =  koTime;            // soonest upcoming first
-    return { m: m, r: r, status: status, hasResult: hasResult, sortKey: sortKey, koTime: koTime };
-  });
-
-  enriched.sort(function(a, b){ return a.sortKey - b.sortKey; });
-
-  // Stage label for the row's small label
-  var stageLabelOf = function(m){
-    if (m.g) return 'Group ' + m.g;
-    if (m.stage && STAGE_LABELS[m.stage]) return STAGE_LABELS[m.stage];
-    return '';
-  };
-
-  // For knockout matches without entered team names yet, fall back to slot label
-  var displayName = function(m, r, side) {
-    if (r && r['team_'+side]) return r['team_'+side];
-    return side === 'a' ? m.a : m.b;
-  };
-
-  // Tally for the summary at top
-  var doneCount    = enriched.filter(function(e){return e.status==='done';}).length;
-  var liveCount    = enriched.filter(function(e){return e.status==='live';}).length;
-  var upcomingCount = enriched.filter(function(e){return e.status==='upcoming';}).length;
-
-  var html = '';
-  // Summary header
-  html += '<div style="background:linear-gradient(135deg,#0d1f3c 0%,#1e3a6e 100%);color:#fff;padding:16px 18px">';
-  html += '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">📺 Live Results</div>';
-  html += '<div style="font-size:13px;line-height:1.5;opacity:.95">';
-  html += '<strong>'+doneCount+'</strong> completed';
-  if (liveCount > 0) html += ' · <strong style="color:#ffd54f">'+liveCount+'</strong> in progress';
-  html += ' · <strong>'+upcomingCount+'</strong> upcoming. Sorted most recent first.';
-  html += '</div>';
-  html += '</div>';
-
-  // List
-  enriched.forEach(function(e){
-    var m = e.m, r = e.r;
-    var teamA = displayName(m, r, 'a');
-    var teamB = displayName(m, r, 'b');
-
-    var bgColor, badge, scoreHtml;
-    if (e.status === 'done') {
-      bgColor = '#fff';
-      badge   = '<span style="background:#e6f4ec;color:#0d4a2a;border:1px solid #70c090;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">Final</span>';
-      var aetSuffix = r.winner ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">(AET → '+esc(r.winner==='A'?teamA:teamB)+')</span>' : '';
-      scoreHtml = '<span style="font-family:var(--fh);font-size:22px;font-weight:900;color:var(--navy)">'+r.goals_a+' : '+r.goals_b+'</span>' + aetSuffix;
-      if (r.multiplier && Number(r.multiplier) > 1) {
-        scoreHtml += ' <span style="font-size:11px;background:var(--gold);color:#fff;padding:2px 6px;border-radius:8px;font-weight:700">×'+Number(r.multiplier).toFixed(2)+'</span>';
-      }
-    } else if (e.status === 'live') {
-      bgColor = '#fff8e1';
-      badge   = '<span style="background:#fff3cd;color:#856404;border:1px solid #ffd54f;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">⚽ Live / Awaiting</span>';
-      scoreHtml = '<span style="font-family:var(--fh);font-size:18px;font-weight:700;color:#856404">— : —</span> <span style="font-size:11px;color:var(--muted)">(result pending)</span>';
-    } else {
-      bgColor = '#fafafa';
-      badge   = '<span style="background:#f0f2f6;color:var(--muted);border:1px solid var(--border);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.3px">Upcoming</span>';
-      scoreHtml = '<span style="font-size:13px;color:var(--muted)">Kicks off '+esc(fmtKO(m.ko))+'</span>';
-    }
-
-    html += '<div style="background:'+bgColor+';border-bottom:1px solid #f0f2f6;padding:12px 16px">';
-    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
-    html += '<span style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px">'+esc(stageLabelOf(m))+'</span>';
-    html += badge;
-    html += '</div>';
-    html += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center">';
-    html += '<div style="text-align:right;font-weight:600;color:var(--navy);font-size:14px">'+esc(teamA)+'</div>';
-    html += '<div style="text-align:center">'+scoreHtml+'</div>';
-    html += '<div style="text-align:left;font-weight:600;color:var(--navy);font-size:14px">'+esc(teamB)+'</div>';
-    html += '</div>';
-    if (e.status === 'done' && m.ko) {
-      html += '<div style="text-align:center;font-size:10px;color:var(--muted);margin-top:6px">'+esc(fmtKO(m.ko))+'</div>';
-    }
-    html += '</div>';
-  });
-
-  document.getElementById('panel-results').innerHTML = html;
 }
 
 init();
