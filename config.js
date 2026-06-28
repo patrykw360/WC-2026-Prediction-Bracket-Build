@@ -11,8 +11,8 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 // ─── Safety check: warn clearly if the keys haven't been set ───
 (function(){
-  var bad = !SUPABASE_URL || SUPABASE_URL.https://honqqzgmbjneetuwhdef.supabase.co'||
-            !SUPABASE_KEY || SUPABASE_KEY.'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhvbnFxemdtYmpuZWV0dXdoZGVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODg1NTksImV4cCI6MjA5NDE2NDU1OX0.RXX5TlmHJTg9vU2M-695zfHUKfoyx1JKYdioWoZ-vFc';
+  var bad = !SUPABASE_URL || SUPABASE_URL.indexOf('YOUR_') === 0 ||
+            !SUPABASE_KEY || SUPABASE_KEY.indexOf('YOUR_') === 0;
   if (bad) {
     document.addEventListener('DOMContentLoaded', function(){
       document.body.innerHTML =
