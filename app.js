@@ -1,11 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
-// Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
-// ═══════════════════════════════════════════════════════════════
-
-// ─────────────────────────────────────────────────────────────
-// STATE
-// ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
@@ -45,14 +37,17 @@ function scoreP(pa,pb,ra,rb){
 }
 function tend(a,b){if(a===null||b===null)return '';if(a>b)return 'A';if(a===b)return 'D';return 'B';}
 // Set to true to lock every R1 prediction across the board (tournament has started).
-// Round 2 picks (made after group stage ends, against real matchups) are unaffected.
+// Round 2 picks use a SEPARATE lock — see isR2Locked() below.
 var R1_GLOBAL_LOCK = true;
 function isLocked(ko){
-  // Global lock: once flipped to true, ALL round-1 predictions are locked
-  // regardless of individual match kickoff. Set this when the tournament starts
-  // to freeze every user's R1 picks. Round 2 saves use a separate path.
+  // For Round 1: global lock once tournament starts, regardless of individual match kickoff.
   if (R1_GLOBAL_LOCK) return true;
   return ko && new Date(ko) < new Date();
+}
+function isR2Locked(){
+  // Round 2 lock is admin-controlled, not per-match. Admin flips r2_locked in
+  // tournament_settings via admin.html → the tournament_state view picks it up.
+  return !!(tournamentState && tournamentState.r2_locked);
 }
 function fmtKO(iso){
   if(!iso)return '';
@@ -182,23 +177,67 @@ function loadApp(){
 
 function setupRealtime(){
   if(realtimeSetup)return; realtimeSetup=true;
-  sb.channel('live').on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
-    if(p.new&&p.new.match_id)allResults[p.new.match_id]=p.new;
-    // Refresh tournament state — may have just flipped to Round 2 open
+  var refreshState = function(){
     sb.from('tournament_state').select('*').single().then(function(r){
       if(r&&r.data)tournamentState=r.data;
       renderPredict();
-      // If user is currently looking at the Results tab, refresh it too
       var resultsTabActive = document.querySelector('.tab.active[data-tab=results]');
       if (resultsTabActive) renderResults();
     });
-    if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
-  }).subscribe();
+  };
+  sb.channel('live')
+    .on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
+      if(p.new&&p.new.match_id)allResults[p.new.match_id]=p.new;
+      refreshState();
+      if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
+    })
+    .on('postgres_changes',{event:'*',schema:'public',table:'tournament_settings'},function(){
+      // Admin flipped R2 lock or another setting — re-fetch tournament_state
+      refreshState();
+    })
+    .subscribe();
 }
 
 // ─────────────────────────────────────────────────────────────
 // TABS
 // ─────────────────────────────────────────────────────────────
+// Standings auto-refresh timer (30s) — only runs while user is on the Standings tab
+var lbPollTimer = null;
+
+function startStandingsPoll() {
+  stopStandingsPoll(); // safety: never stack timers
+  lbPollTimer = setInterval(function() {
+    // Only refresh if the standings tab is actually visible — extra guard against stuck timers
+    var stillOnTab = document.querySelector('.tab.active[data-tab=leaderboard]');
+    if (!stillOnTab) { stopStandingsPoll(); return; }
+    // Silently refresh without showing the spinner (preserve scroll position)
+    silentRefreshLb();
+  }, 30000);
+}
+
+function stopStandingsPoll() {
+  if (lbPollTimer) { clearInterval(lbPollTimer); lbPollTimer = null; }
+}
+
+function silentRefreshLb() {
+  // Re-fetch the leaderboard rows without flashing the spinner.
+  // Replicates loadAndRenderLb but skips the loading-state UI.
+  if (lbMode === 'group' && lbGroupId) {
+    sb.from('group_members').select('user_id').eq('group_id', lbGroupId).then(function(r) {
+      var uids = (r.data||[]).map(function(x){ return x.user_id; });
+      if (!uids.length) { lbData = []; renderLb(); return; }
+      sb.from('leaderboard').select('*').in('user_id', uids)
+        .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
+        .then(function(r2) { lbData = r2.data || []; lbOffset = lbData.length; renderLb(); });
+    });
+  } else {
+    sb.from('leaderboard').select('*')
+      .order('total_pts', { ascending: false }).order('exact_scores', { ascending: false })
+      .range(0, Math.max(LB_PAGE, lbOffset) - 1)
+      .then(function(r) { lbData = r.data || []; lbOffset = lbData.length; renderLb(); });
+  }
+}
+
 function switchTab(el){
   document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
   el.classList.add('active');
@@ -211,7 +250,14 @@ function switchTab(el){
   var vp=document.getElementById('viewer-prog');
   vb.style.display=tab==='predict'?'':'none';
   vp.style.display=tab==='predict'?'':'none';
-  if(tab==='leaderboard'){lbData=[];lbOffset=0;loadAndRenderLb();}
+  // Manage the standings poll: start on entering, stop on leaving
+  if (tab === 'leaderboard') {
+    lbData=[]; lbOffset=0;
+    loadAndRenderLb();
+    startStandingsPoll();
+  } else {
+    stopStandingsPoll();
+  }
   if(tab==='groups')renderGroups();
   if(tab==='awards')loadAwards();
   if(tab==='results')renderResults();
@@ -518,13 +564,23 @@ function renderRound2Section(isMe) {
   var preds = isMe ? myPredsR2 : viewedPredsR2;
 
   var html = '';
+  var r2Locked = isR2Locked();
   // Header banner explaining Round 2
-  html += '<div style="background:linear-gradient(135deg,#1a7a4a 0%,#0d4a2a 100%);color:#fff;padding:14px 18px;margin:24px 14px 0;border-radius:8px">' +
-            '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">🏆 ROUND 2 — Official Knockouts</div>' +
-            '<div style="font-size:13px;line-height:1.5;opacity:.95">' +
-              'The real Round of 32 is set. Make fresh predictions for the official matchups — these score independently and stack on top of Round 1.' +
-            '</div>' +
-          '</div>';
+  if (r2Locked) {
+    html += '<div style="background:linear-gradient(135deg,#7a2a1e 0%,#a83a2a 100%);color:#fff;padding:14px 18px;margin:24px 14px 0;border-radius:8px">' +
+              '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">🔒 ROUND 2 — Locked</div>' +
+              '<div style="font-size:13px;line-height:1.5;opacity:.95">' +
+                'Round 2 picks are locked. Your knockout predictions are final.' +
+              '</div>' +
+            '</div>';
+  } else {
+    html += '<div style="background:linear-gradient(135deg,#1a7a4a 0%,#0d4a2a 100%);color:#fff;padding:14px 18px;margin:24px 14px 0;border-radius:8px">' +
+              '<div style="font-family:var(--fh);font-size:16px;font-weight:800;letter-spacing:.3px;margin-bottom:6px">🏆 ROUND 2 — Official Knockouts</div>' +
+              '<div style="font-size:13px;line-height:1.5;opacity:.95">' +
+                'The real Round of 32 is set. Make fresh predictions for the official matchups — open until the admin locks them. Round 2 scores stack on top of Round 1.' +
+              '</div>' +
+            '</div>';
+  }
 
   var stages = ['r32','r16','qf','sf','3rd','final'];
   stages.forEach(function(stage) {
@@ -538,7 +594,7 @@ function renderRound2Section(isMe) {
     ms.forEach(function(m) {
       var pred = preds[m.id] || null;
       var res = allResults[m.id] || null;
-      var locked = isLocked(m.ko);
+      var locked = isR2Locked();        // R2 ignores per-match kickoff; admin lock only
       var pa = pred ? pred.a : null;
       var pb = pred ? pred.b : null;
       var pw = pred ? pred.w : '';
@@ -598,6 +654,7 @@ function renderRound2Section(isMe) {
 
 // ─── Round 2 save handlers ───────────────────────────────────────────────
 function onR2KoInp(matchId, rowEl) {
+  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
   var aEl = rowEl.querySelector('[data-side="a"]');
   var bEl = rowEl.querySelector('[data-side="b"]');
   var a = aEl.value !== '' ? parseInt(aEl.value, 10) : null;
@@ -622,6 +679,7 @@ function onR2KoInp(matchId, rowEl) {
 }
 
 function onR2KoWinner(matchId, winner) {
+  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
   var existing = myPredsR2[matchId] || {};
   sb.from('predictions').upsert(
     {user_id:me.id, match_id:matchId, goals_a:existing.a, goals_b:existing.b, winner:winner, round:2, updated_at:new Date().toISOString()},
@@ -634,6 +692,7 @@ function onR2KoWinner(matchId, winner) {
 }
 
 function saveR2Round(stage) {
+  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
   var ids = KO_MATCHES.filter(function(m){return m.stage===stage;}).map(function(m){return m.id;});
   var btn = document.getElementById('btn-save-r2-'+stage);
   var status = document.getElementById('status-r2-'+stage);
@@ -848,17 +907,28 @@ function renderLb(){
   var html=buildLbTabsHtml();
   if(!lbData.length){html+='<div class="empty-state">No scored predictions yet.</div>';document.getElementById('panel-leaderboard').innerHTML=html;return;}
   html+='<div class="lb-wrap"><table class="lb-table">';
-  html+='<tr class="lb-th"><td></td><td>Player</td><td style="text-align:center">Done</td><td style="text-align:center" title="Exact score">4pts</td><td style="text-align:center" title="Correct GD">3pts</td><td style="text-align:center" title="Correct tendency">2pts</td><td style="text-align:right">Points</td></tr>';
+  html+='<tr class="lb-th">' +
+          '<td></td>' +
+          '<td>Player</td>' +
+          '<td style="text-align:center" title="Round 1 points">R1</td>' +
+          '<td style="text-align:center" title="Round 2 points">R2</td>' +
+          '<td style="text-align:center" title="Award points">Awards</td>' +
+          '<td style="text-align:center" title="Exact scores">4pts</td>' +
+          '<td style="text-align:right">Total</td>' +
+        '</tr>';
   lbData.forEach(function(r,i){
     var isMe2=r.user_id===me.id;
     var bonus=Number(r.bonus_pts)||0;
+    var r1 = Number(r.round1_pts) || 0;
+    var r2 = Number(r.round2_pts) || 0;
+    var aw = Number(r.award_pts) || 0;
     html+='<tr class="lb-tr'+(isMe2?' me':'')+'">';
     html+='<td class="lb-rk '+(rkCls[i]||'')+'">'+(i+1)+'</td>';
     html+='<td><div class="lb-nm">'+esc(r.display_name||'Player')+(isMe2?' <span style="color:var(--muted);font-size:11px">(me)</span>':'')+'</div></td>';
-    html+='<td class="lb-n">'+(r.scored_matches||0)+'</td>';
+    html+='<td class="lb-n" style="color:var(--navy)">'+fmtPts(r1)+'</td>';
+    html+='<td class="lb-n" style="color:#0d4a2a">'+fmtPts(r2)+'</td>';
+    html+='<td class="lb-n" style="color:var(--gold)">'+fmtPts(aw)+'</td>';
     html+='<td class="lb-n" style="color:#2ecc71">'+(r.exact_scores||0)+'</td>';
-    html+='<td class="lb-n" style="color:var(--gold)">'+(r.correct_gd||0)+'</td>';
-    html+='<td class="lb-n" style="color:#e67e22">'+(r.correct_tendency||0)+'</td>';
     html+='<td><div class="lb-pts">'+fmtPts(r.total_pts||0)+'</div>'+(bonus>0?'<div class="lb-bns">+'+fmtPts(bonus)+' bonus</div>':'')+'</td>';
     html+='</tr>';
   });
@@ -1176,7 +1246,7 @@ function renderRules(){
     '<tr><td><strong>Wrong tendency</strong></td><td><span class="bdg" style="background:#bdc3c7">0</span></td><td style="color:#999">Predict 1-0, result 0-1</td></tr>',
     '</tbody></table></div>',
     '<div class="rules-sec"><h3>When do points appear on the leaderboard?</h3>',
-    '<p class="rules-note">Results are entered as matches finish, but they don\'t show on the leaderboard immediately. Instead, all points from a given day drop together <strong>at midnight Pacific Time</strong> (Los Angeles). So if matches happen across June 14 (LA time), those points appear on June 15. This keeps the standings clean and avoids constant live updates during games.</p></div>',
+    '<p class="rules-note">Points appear as soon as the admin enters a result. The standings tab refreshes automatically as new results come in (every 30 seconds, or instantly if you have the page open when results are saved).</p></div>',
     '<div class="rules-sec"><h3>Contrarian Multiplier</h3>',
     '<p class="rules-note">After kickoff, points are multiplied based on how many players picked the same winner. Going against the majority and being right earns extra points.</p>',
     '<table class="rt"><thead><tr><th>% who picked the winning tendency</th><th>Multiplier</th></tr></thead><tbody>',
