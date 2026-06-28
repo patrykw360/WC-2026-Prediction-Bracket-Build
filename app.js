@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════
+// APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
+// Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
@@ -5,7 +13,7 @@ var viewedUid=null, viewedPreds={}, viewedPredsR2={}, viewedName='';
 var lbData=[], lbOffset=0, lbMode='global', lbGroupId=null;
 var lbSortKey='total_pts';   // 'total_pts' | 'exact_scores' | 'correct_gd' | 'correct_tendency' | 'wrong'
 var expandedUid=null;        // when set, that user's row shows an inline breakdown
-var myBreakdown=null;        // cached per-match details for the current user
+var breakdownCache={};       // user_id -> data (array of matches | {error} | {restricted:true})
 var myGroups=[];
 var tournamentState={round2_open:false, group_results_entered:0, group_matches_total:72};
 var appLoaded=false, realtimeSetup=false;
@@ -192,11 +200,11 @@ function setupRealtime(){
     .on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
       if(p.new&&p.new.match_id)allResults[p.new.match_id]=p.new;
       refreshState();
-      // Result data changed — the cached per-match breakdown is now stale
-      myBreakdown = null;
+      // Result data changed — all breakdown caches are now stale
+      breakdownCache = {};
       if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
-      // If user has their breakdown open, re-fetch it
-      if(expandedUid===me.id) fetchMyBreakdown();
+      // If user has any breakdown open, re-fetch it
+      if(expandedUid) fetchBreakdown(expandedUid);
     })
     .on('postgres_changes',{event:'*',schema:'public',table:'tournament_settings'},function(){
       refreshState();
@@ -256,6 +264,11 @@ function switchTab(el){
   var vp=document.getElementById('viewer-prog');
   vb.style.display=tab==='predict'?'':'none';
   vp.style.display=tab==='predict'?'':'none';
+  // Clicking the Predict tab always returns you to YOUR OWN predictions.
+  // This prevents users from getting stuck in someone else's view.
+  if (tab === 'predict' && viewedUid !== null) {
+    backToMine();
+  }
   // Manage the standings poll: start on entering, stop on leaving
   if (tab === 'leaderboard') {
     lbData=[]; lbOffset=0;
@@ -302,6 +315,20 @@ function renderPredict(){
 
   // Build the auto-advanced bracket from this player's (overlaid) predictions
   var bracket = buildBracket(preds);
+
+  // ── If viewing someone else's predictions, make that VERY visible ──
+  if (!isMe) {
+    html +=
+      '<div style="background:#fff3cd;border:2px solid #ffd54f;border-radius:0;padding:12px 18px;color:#856404">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">' +
+          '<div style="font-size:13px;line-height:1.4">' +
+            '<strong style="font-family:var(--fh);font-size:14px">👀 Viewing ' + esc(viewedName || 'another player') + '\'s picks</strong><br>' +
+            '<span style="opacity:.85">You can\'t edit from here — inputs are intentionally read-only.</span>' +
+          '</div>' +
+          '<button onclick="backToMine()" style="font-family:var(--fh);font-size:12px;font-weight:700;padding:8px 16px;background:#856404;color:#fff;border:none;border-radius:6px;cursor:pointer;letter-spacing:.3px;white-space:nowrap">← Back to my picks</button>' +
+        '</div>' +
+      '</div>';
+  }
 
   // ── Welcome message (dismissable, only shown to self, only once per browser) ──
   if (isMe) {
@@ -900,7 +927,7 @@ function loadAndRenderLb(){
       .then(function(r){lbData=r.data||[];lbOffset=lbData.length;renderLb();});
   }
 }
-function setLbMode(mode,gid){lbMode=mode;lbGroupId=gid||null;lbData=[];lbOffset=0;expandedUid=null;myBreakdown=null;loadAndRenderLb();}
+function setLbMode(mode,gid){lbMode=mode;lbGroupId=gid||null;lbData=[];lbOffset=0;expandedUid=null;breakdownCache={};loadAndRenderLb();}
 function buildLbTabsHtml(){
   var h='<div class="lb-tabs"><div class="lb-tab'+(lbMode==='global'?' active':'')+'" onclick="setLbMode(\'global\')">🌍 Global</div>';
   myGroups.forEach(function(g){
@@ -957,12 +984,13 @@ function renderLb(){
     var isMe2=r.user_id===me.id;
     var bonus=Number(r.bonus_pts)||0;
     var isExpanded = expandedUid === r.user_id;
-    var canExpand = isMe2;  // only the user's own row is expandable (RLS would block fetching others' picks)
+    // Every row is now expandable; the breakdown content varies by relationship
+    var canExpand = true;
     var rowAttrs = canExpand ? ' style="cursor:pointer" onclick="toggleLbBreakdown(\''+r.user_id+'\')"' : '';
     var arrow = canExpand ? (isExpanded ? '▾ ' : '▸ ') : '';
     html+='<tr class="lb-tr'+(isMe2?' me':'')+(isExpanded?' lb-expanded':'')+'"'+rowAttrs+'>';
     html+='<td class="lb-rk '+(rkCls[i]||'')+'">'+(i+1)+'</td>';
-    html+='<td><div class="lb-nm">'+arrow+esc(r.display_name||'Player')+(isMe2?' <span style="color:var(--muted);font-size:11px">(me'+(canExpand?(isExpanded?' — click to collapse':' — click to expand'):'')+')</span>':'')+'</div></td>';
+    html+='<td><div class="lb-nm">'+arrow+esc(r.display_name||'Player')+(isMe2?' <span style="color:var(--muted);font-size:11px">(me)</span>':'')+'</div></td>';
     html+='<td class="lb-n">'+(r.scored_matches||0)+'</td>';
     html+='<td class="lb-n" style="color:#2ecc71;font-weight:'+(lbSortKey==='exact_scores'?'800':'700')+'">'+(r.exact_scores||0)+'</td>';
     html+='<td class="lb-n" style="color:var(--gold);font-weight:'+(lbSortKey==='correct_gd'?'800':'700')+'">'+(r.correct_gd||0)+'</td>';
@@ -971,14 +999,15 @@ function renderLb(){
     html+='<td><div class="lb-pts">'+fmtPts(r.total_pts||0)+'</div>'+(bonus>0?'<div class="lb-bns">+'+fmtPts(bonus)+' bonus</div>':'')+'</td>';
     html+='</tr>';
 
-    // Inline breakdown row when this is the user's own row AND expanded
-    if (isExpanded && canExpand) {
+    // Inline breakdown row when expanded
+    if (isExpanded) {
       html += '<tr class="lb-breakdown-row"><td colspan="8" style="padding:0;background:#fbfcfd;border-bottom:1px solid var(--border)">';
       html += '<div id="lb-breakdown-content" style="padding:14px 18px">';
-      if (myBreakdown === null) {
-        html += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:14px"><span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle"></span> Loading your match breakdown...</div>';
+      var cached = breakdownCache[r.user_id];
+      if (cached === undefined) {
+        html += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:14px"><span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle"></span> Loading '+esc(r.display_name||'player')+'\'s match breakdown...</div>';
       } else {
-        html += renderBreakdownContent(myBreakdown);
+        html += renderBreakdownContent(cached, r);
       }
       html += '</div></td></tr>';
     }
@@ -996,69 +1025,141 @@ function setLbSort(key) {
   renderLb();
 }
 
-// Toggle the per-match breakdown for the current user only
+// Toggle the per-match breakdown for any user. For SELF: full breakdown.
+// For LEAGUE-MATES: knockout-only breakdown. For NON-LEAGUE-MATES: friendly message.
 function toggleLbBreakdown(uid) {
-  if (uid !== me.id) return;   // only self-expand allowed
   if (expandedUid === uid) {
     expandedUid = null;
     renderLb();
     return;
   }
   expandedUid = uid;
-  // If we don't have a cached breakdown, fetch it
-  if (myBreakdown === null) {
-    fetchMyBreakdown();
+  if (breakdownCache[uid] === undefined) {
+    fetchBreakdown(uid);
   }
   renderLb();
 }
 
-// Fetch the scored_predictions rows for the current user, with match metadata
-function fetchMyBreakdown() {
-  // Pull every scored prediction the user has, with match data
-  sb.from('scored_predictions')
-    .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
-    .eq('user_id', me.id)
-    .then(function(r) {
-      if (r.error) {
-        myBreakdown = { error: r.error.message };
-      } else {
-        myBreakdown = r.data || [];
-      }
-      // Re-render only the breakdown content area if it's still in DOM
-      var el = document.getElementById('lb-breakdown-content');
-      if (el) {
-        el.innerHTML = renderBreakdownContent(myBreakdown);
-      }
-    });
+// Determine which "view mode" applies for a given user id:
+//   'self'         — own breakdown, all matches
+//   'leaguemate'   — share a league, knockout-only breakdown
+//   'restricted'   — no shared league, show message
+function viewModeFor(uid) {
+  if (uid === me.id) return 'self';
+  if (!myGroups || !myGroups.length) return 'restricted';
+  return null;   // unknown yet — needs a server check
 }
 
-function renderBreakdownContent(data) {
+function fetchBreakdown(uid) {
+  // Self: fetch everything
+  if (uid === me.id) {
+    sb.from('scored_predictions')
+      .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
+      .eq('user_id', uid)
+      .then(function(r) {
+        breakdownCache[uid] = r.error ? { error: r.error.message } : (r.data || []);
+        refreshBreakdownPanel(uid);
+      });
+    return;
+  }
+
+  // Other user: first verify a shared league exists (RLS would block the prediction query otherwise,
+  // but checking explicitly lets us show a clean "not in your league" message instead of empty data).
+  // Strategy: query group_members for any row matching (my groups, this user). Returns 0 rows = not a league-mate.
+  if (!myGroups.length) {
+    breakdownCache[uid] = { restricted: true };
+    refreshBreakdownPanel(uid);
+    return;
+  }
+  var myGroupIds = myGroups.map(function(g){return g.id;});
+  sb.from('group_members').select('user_id').in('group_id', myGroupIds).eq('user_id', uid).then(function(check) {
+    var isLeagueMate = (check.data || []).length > 0;
+    if (!isLeagueMate) {
+      breakdownCache[uid] = { restricted: true };
+      refreshBreakdownPanel(uid);
+      return;
+    }
+    // Fetch only knockout matches (R32 onwards). Group matches stay hidden.
+    // Knockout stages: r32, r16, qf, sf, 3rd, final
+    sb.from('scored_predictions')
+      .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
+      .eq('user_id', uid)
+      .in('stage', ['r32','r16','qf','sf','3rd','final'])
+      .then(function(r) {
+        if (r.error) {
+          breakdownCache[uid] = { error: r.error.message };
+        } else {
+          breakdownCache[uid] = { knockoutOnly: true, matches: r.data || [] };
+        }
+        refreshBreakdownPanel(uid);
+      });
+  });
+}
+
+function refreshBreakdownPanel(uid) {
+  if (expandedUid !== uid) return;
+  var el = document.getElementById('lb-breakdown-content');
+  if (!el) return;
+  var row = lbData.find(function(r){return r.user_id===uid;}) || { display_name:'Player' };
+  el.innerHTML = renderBreakdownContent(breakdownCache[uid], row);
+}
+
+function renderBreakdownContent(data, row) {
   if (data && data.error) {
     return '<div style="color:var(--red);font-size:13px">Failed to load: ' + esc(data.error) + '</div>';
   }
-  if (!data || !data.length) {
+  if (data && data.restricted) {
+    return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;color:var(--muted);font-size:13px;text-align:center">' +
+             '<div style="font-size:24px">🔒</div>' +
+             '<div><strong style="color:var(--navy);font-family:var(--fh)">'+esc(row.display_name||'This player')+'</strong> is not in any of your leagues.</div>' +
+             '<div style="font-size:12px;max-width:340px">Join a league with them to see their knockout predictions. Or invite them to yours — share your league code from the Groups tab.</div>' +
+           '</div>';
+  }
+
+  // Determine the matches array and whether this is knockout-only
+  var matches, knockoutOnly = false, isSelf = false;
+  if (Array.isArray(data)) {
+    matches = data;
+    isSelf = (row.user_id === me.id);
+  } else if (data && data.knockoutOnly) {
+    matches = data.matches || [];
+    knockoutOnly = true;
+  } else {
+    matches = [];
+  }
+
+  if (!matches.length) {
+    if (knockoutOnly) {
+      return '<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">'+esc(row.display_name||'This player')+' hasn\'t scored any knockout matches yet. Points appear once knockout results are entered.</div>';
+    }
     return '<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">No scored matches yet. Points appear once results are entered.</div>';
   }
 
   // Group by base_pts tier — 4, 3, 2, 0
   var groups = { 4: [], 3: [], 2: [], 0: [] };
-  data.forEach(function(p) { if (groups[p.base_pts] !== undefined) groups[p.base_pts].push(p); });
+  matches.forEach(function(p) { if (groups[p.base_pts] !== undefined) groups[p.base_pts].push(p); });
 
   var tierColors = { 4:'#2ecc71', 3:'var(--gold)', 2:'#e67e22', 0:'#9aa0a8' };
   var tierLabels = { 4:'Exact scores (4 pts)', 3:'Correct goal diff (3 pts)', 2:'Correct tendency (2 pts)', 0:'Wrong tendency (0 pts)' };
   var html = '';
-  html += '<div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);letter-spacing:.3px;margin-bottom:10px">YOUR MATCH BREAKDOWN</div>';
+  var headerLabel = isSelf
+    ? 'YOUR MATCH BREAKDOWN'
+    : esc((row.display_name||'PLAYER').toUpperCase()) + '\u2019S KNOCKOUT BREAKDOWN';
+  html += '<div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);letter-spacing:.3px;margin-bottom:10px">'+headerLabel+'</div>';
+  if (knockoutOnly) {
+    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;font-style:italic">Group stage picks are private. Showing knockout matches only (R32 → Final).</div>';
+  }
 
   [4, 3, 2, 0].forEach(function(tier) {
-    var matches = groups[tier];
-    if (!matches.length) return;
+    var ms = groups[tier];
+    if (!ms.length) return;
     html += '<div style="margin-bottom:14px">';
     html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
     html += '<span style="background:'+tierColors[tier]+';color:#fff;font-family:var(--fh);font-weight:700;font-size:11px;padding:3px 8px;border-radius:10px;letter-spacing:.3px">'+tierLabels[tier]+'</span>';
-    html += '<span style="font-size:11px;color:var(--muted)">'+matches.length+' match'+(matches.length===1?'':'es')+'</span>';
+    html += '<span style="font-size:11px;color:var(--muted)">'+ms.length+' match'+(ms.length===1?'':'es')+'</span>';
     html += '</div>';
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px">';
-    matches.forEach(function(m) {
+    ms.forEach(function(m) {
       var roundLabel = m.round === 2 ? 'R2' : 'R1';
       var stageLabel = m.stage === 'group' ? 'Group' : (STAGE_LABELS[m.stage] || m.stage);
       html += '<div style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">';
@@ -1234,11 +1335,16 @@ function selectUser(uid,name){
     viewedName='';
     var myName=(myProfile&&myProfile.display_name)||me.email.split('@')[0];
     document.getElementById('viewer-name').textContent=myName;
+    var btn=document.getElementById('back-to-mine-btn');
+    if(btn)btn.style.display='none';
     renderPredict();return;
   }
   viewedUid=uid;
   viewedName=name;
   document.getElementById('viewer-name').textContent=name;
+  // Show the "back to mine" button so users can never get stuck
+  var btn2=document.getElementById('back-to-mine-btn');
+  if(btn2)btn2.style.display='';
   document.getElementById('panel-predict').innerHTML='<div class="panel-load"><div class="spinner"></div> Loading predictions...</div>';
   Promise.all([
     sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).eq('round',1),
@@ -1250,6 +1356,22 @@ function selectUser(uid,name){
     (rs[1].data||[]).forEach(function(p){viewedPredsR2[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};});
     renderPredict();
   });
+}
+
+// One-click escape hatch: force the user back to viewing their own predictions.
+// Safe to call from anywhere — resets viewedUid, hides the back button, re-renders.
+function backToMine(){
+  viewedUid=null;
+  viewedName='';
+  viewedPreds={};
+  viewedPredsR2={};
+  var myName=(myProfile&&myProfile.display_name)||(me?me.email.split('@')[0]:'Me');
+  var vn=document.getElementById('viewer-name');
+  if(vn)vn.textContent=myName;
+  var btn=document.getElementById('back-to-mine-btn');
+  if(btn)btn.style.display='none';
+  renderPredict();
+  toast('Back to your predictions','ok');
 }
 
 // ─────────────────────────────────────────────────────────────
