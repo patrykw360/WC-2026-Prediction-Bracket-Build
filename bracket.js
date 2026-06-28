@@ -1,3 +1,14 @@
+// ═══════════════════════════════════════════════════════════════
+// BRACKET ENGINE  —  auto-advances knockout matchups based on
+// the user's predictions, following FIFA 2026 rules.
+//
+// Public API:
+//   buildBracket(predictions) → { koTeams: { R32_01:{a:'Mexico',b:...}, ... }, complete: {group:true, r32:false, ...} }
+//
+// Depends on: GROUP_TEAMS, GROUP_MATCHES, KO_MATCHES (from data.js)
+// ═══════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────
 // FIFA Annex C — Best-3rd-place team routing
 // Maps the 8-letter combo of groups whose 3rd-place teams advance
 // to which 3rd-place team goes into which R32 match.
@@ -256,53 +267,47 @@ function buildBracket(predictions) {
     return null;
   }
 
-  // Check R32 → fill R16 if all R32 predictions made
+  // Check R32 → fill R16 (per-match: fill each R16 slot if its specific feeders are predicted)
   var r32Matches = KO_MATCHES.filter(function(m){return m.stage==='r32';});
   var r32AllPredicted = r32Matches.every(function(m) {
     var p = predictions[m.id];
     return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
            (p.a !== p.b || p.w);  // if draw, must have AET winner
   });
-  if (r32AllPredicted) {
-    complete.r32 = true;
-    chainRound(KO_MATCHES.filter(function(m){return m.stage==='r16';}));
+  complete.r32 = r32AllPredicted;
+  // Always try to chain — chainRound resolves what it can per-match
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='r16';}));
 
-    // Check R16 → fill QF
-    var r16Matches = KO_MATCHES.filter(function(m){return m.stage==='r16';});
-    var r16AllPredicted = r16Matches.every(function(m) {
-      var p = predictions[m.id];
-      return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
-             (p.a !== p.b || p.w);
-    });
-    if (r16AllPredicted) {
-      complete.r16 = true;
-      chainRound(KO_MATCHES.filter(function(m){return m.stage==='qf';}));
+  // Check R16 → fill QF
+  var r16Matches = KO_MATCHES.filter(function(m){return m.stage==='r16';});
+  var r16AllPredicted = r16Matches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.r16 = r16AllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='qf';}));
 
-      // Check QF → fill SF
-      var qfMatches = KO_MATCHES.filter(function(m){return m.stage==='qf';});
-      var qfAllPredicted = qfMatches.every(function(m) {
-        var p = predictions[m.id];
-        return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
-               (p.a !== p.b || p.w);
-      });
-      if (qfAllPredicted) {
-        complete.qf = true;
-        chainRound(KO_MATCHES.filter(function(m){return m.stage==='sf';}));
+  // Check QF → fill SF
+  var qfMatches = KO_MATCHES.filter(function(m){return m.stage==='qf';});
+  var qfAllPredicted = qfMatches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.qf = qfAllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='sf';}));
 
-        // Check SF → fill 3rd place + Final
-        var sfMatches = KO_MATCHES.filter(function(m){return m.stage==='sf';});
-        var sfAllPredicted = sfMatches.every(function(m) {
-          var p = predictions[m.id];
-          return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
-                 (p.a !== p.b || p.w);
-        });
-        if (sfAllPredicted) {
-          complete.sf = true;
-          chainRound(KO_MATCHES.filter(function(m){return m.stage==='3rd' || m.stage==='final';}));
-        }
-      }
-    }
-  }
+  // Check SF → fill Final + 3rd Place
+  var sfMatches = KO_MATCHES.filter(function(m){return m.stage==='sf';});
+  var sfAllPredicted = sfMatches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.sf = sfAllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='final';}));
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='3rd';}));
 
   // For any knockout slot that didn't get filled, fall back to the original slot description
   KO_MATCHES.forEach(function(m) {
