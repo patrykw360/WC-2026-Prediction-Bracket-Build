@@ -96,6 +96,13 @@
   </div>
   <div class="admin-wrap">
 
+    <!-- TOURNAMENT CONTROLS -->
+    <div class="admin-card">
+      <h2>⚙️ Tournament Controls</h2>
+      <p class="muted">Toggle global settings that affect every user.</p>
+      <div id="tournament-controls"><div class="panel-load"><div class="spinner"></div> Loading...</div></div>
+    </div>
+
     <!-- ROSTER PASTE-IN -->
     <div class="admin-card">
       <h2>📋 Squad Rosters</h2>
@@ -213,6 +220,7 @@ function initAdmin() {
   loadAwardResults();
   loadResultsData();
   loadUserProgress();
+  loadTournamentControls();
 }
 
 function loadAllPlayers() {
@@ -886,6 +894,68 @@ function saveResultRow(matchId, isKnockout, teamA, teamB) {
           toast('✓ Saved ' + a + ' - ' + b + (winner ? ' (' + winner + ')' : ''), 'ok');
         });
       });
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// TOURNAMENT CONTROLS (admin-only flags in tournament_settings)
+// ─────────────────────────────────────────────────────────────
+var tournamentControls = { r2_locked: false, round2_open: false };
+
+function loadTournamentControls() {
+  Promise.all([
+    sb.from('tournament_settings').select('r2_locked').eq('id', 1).single(),
+    sb.from('tournament_state').select('round2_open').single()
+  ]).then(function(rs) {
+    tournamentControls.r2_locked = !!(rs[0].data && rs[0].data.r2_locked);
+    tournamentControls.round2_open = !!(rs[1].data && rs[1].data.round2_open);
+    renderTournamentControls();
+  }).catch(function(e) {
+    document.getElementById('tournament-controls').innerHTML =
+      '<div style="padding:12px;color:var(--red);font-size:13px">Failed to load controls: ' + (e.message || e) + '</div>';
+  });
+}
+
+function renderTournamentControls() {
+  var locked = tournamentControls.r2_locked;
+  var open = tournamentControls.round2_open;
+
+  var html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8f9fc;border:1px solid var(--border);border-radius:8px">';
+  html += '<div style="flex:1">';
+  html += '<div style="font-family:var(--fh);font-weight:700;color:var(--navy);font-size:14px;margin-bottom:3px">Round 2 lock</div>';
+  if (!open) {
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 isn\'t available yet — it auto-opens when all 72 group results are entered. The lock toggle becomes meaningful after that.</div>';
+  } else if (locked) {
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 picks are <strong style="color:var(--red)">LOCKED</strong>. No user can edit their R2 predictions. Unlock to reopen.</div>';
+  } else {
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 is <strong style="color:var(--green)">OPEN</strong>. Users can freely edit their R2 picks. Lock when you\'re ready to freeze them.</div>';
+  }
+  html += '</div>';
+  html += '<button onclick="toggleR2Lock()" style="font-family:var(--fh);font-size:12px;font-weight:700;padding:10px 18px;background:'+(locked?'var(--green)':'var(--red)')+';color:#fff;border:none;border-radius:7px;cursor:pointer;letter-spacing:.3px;white-space:nowrap;margin-left:14px">'+(locked?'🔓 Unlock R2':'🔒 Lock R2 now')+'</button>';
+  html += '</div>';
+
+  document.getElementById('tournament-controls').innerHTML = html;
+}
+
+function toggleR2Lock() {
+  var newState = !tournamentControls.r2_locked;
+  var confirmMsg = newState
+    ? 'Lock Round 2? No user will be able to edit their R2 picks after this.'
+    : 'Unlock Round 2? Users will be able to edit their R2 picks again.';
+  if (!confirm(confirmMsg)) return;
+
+  sb.auth.getSession().then(function(s) {
+    sb.from('tournament_settings').upsert({
+      id: 1,
+      r2_locked: newState,
+      updated_at: new Date().toISOString(),
+      updated_by: s.data.session.user.id
+    }, { onConflict: 'id' }).then(function(r) {
+      if (r.error) { toast('Failed: ' + r.error.message, 'err'); return; }
+      tournamentControls.r2_locked = newState;
+      renderTournamentControls();
+      toast(newState ? '🔒 Round 2 locked' : '🔓 Round 2 unlocked', 'ok');
     });
   });
 }
