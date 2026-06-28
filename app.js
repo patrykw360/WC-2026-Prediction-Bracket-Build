@@ -3,6 +3,9 @@ var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
 var viewedUid=null, viewedPreds={}, viewedPredsR2={}, viewedName='';
 var lbData=[], lbOffset=0, lbMode='global', lbGroupId=null;
+var lbSortKey='total_pts';   // 'total_pts' | 'exact_scores' | 'correct_gd' | 'correct_tendency' | 'wrong'
+var expandedUid=null;        // when set, that user's row shows an inline breakdown
+var myBreakdown=null;        // cached per-match details for the current user
 var myGroups=[];
 var tournamentState={round2_open:false, group_results_entered:0, group_matches_total:72};
 var appLoaded=false, realtimeSetup=false;
@@ -189,10 +192,13 @@ function setupRealtime(){
     .on('postgres_changes',{event:'*',schema:'public',table:'results'},function(p){
       if(p.new&&p.new.match_id)allResults[p.new.match_id]=p.new;
       refreshState();
+      // Result data changed — the cached per-match breakdown is now stale
+      myBreakdown = null;
       if(lbData.length){lbData=[];lbOffset=0;if(document.querySelector('.tab.active[data-tab=leaderboard]'))loadAndRenderLb();}
+      // If user has their breakdown open, re-fetch it
+      if(expandedUid===me.id) fetchMyBreakdown();
     })
     .on('postgres_changes',{event:'*',schema:'public',table:'tournament_settings'},function(){
-      // Admin flipped R2 lock or another setting — re-fetch tournament_state
       refreshState();
     })
     .subscribe();
@@ -894,7 +900,7 @@ function loadAndRenderLb(){
       .then(function(r){lbData=r.data||[];lbOffset=lbData.length;renderLb();});
   }
 }
-function setLbMode(mode,gid){lbMode=mode;lbGroupId=gid||null;lbData=[];lbOffset=0;loadAndRenderLb();}
+function setLbMode(mode,gid){lbMode=mode;lbGroupId=gid||null;lbData=[];lbOffset=0;expandedUid=null;myBreakdown=null;loadAndRenderLb();}
 function buildLbTabsHtml(){
   var h='<div class="lb-tabs"><div class="lb-tab'+(lbMode==='global'?' active':'')+'" onclick="setLbMode(\'global\')">🌍 Global</div>';
   myGroups.forEach(function(g){
@@ -906,37 +912,168 @@ function renderLb(){
   var rkCls=['r1','r2','r3'];
   var html=buildLbTabsHtml();
   if(!lbData.length){html+='<div class="empty-state">No scored predictions yet.</div>';document.getElementById('panel-leaderboard').innerHTML=html;return;}
+
+  // Client-side sort by lbSortKey (default 'total_pts' descending)
+  var sortedData = lbData.slice();
+  sortedData.sort(function(a, b){
+    var av = Number(a[lbSortKey]) || 0;
+    var bv = Number(b[lbSortKey]) || 0;
+    if (bv !== av) return bv - av;
+    // tiebreaker chain: total → exact → gd → name
+    if ((Number(b.total_pts)||0) !== (Number(a.total_pts)||0)) return (Number(b.total_pts)||0) - (Number(a.total_pts)||0);
+    if ((b.exact_scores||0) !== (a.exact_scores||0)) return (b.exact_scores||0) - (a.exact_scores||0);
+    if ((b.correct_gd||0) !== (a.correct_gd||0)) return (b.correct_gd||0) - (a.correct_gd||0);
+    return (a.display_name||'').localeCompare(b.display_name||'');
+  });
+
+  // Filter bar above the table — explains the sort + buttons to change it
+  html += '<div class="lb-filter-bar" style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#f8f9fc;border-bottom:1px solid var(--border);flex-wrap:wrap">';
+  html += '<span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Sort:</span>';
+  var sortOpts = [
+    { key:'total_pts',        label:'Total',  color:'var(--navy)'   },
+    { key:'exact_scores',     label:'4 pts',  color:'#2ecc71'      },
+    { key:'correct_gd',       label:'3 pts',  color:'var(--gold)'  },
+    { key:'correct_tendency', label:'2 pts',  color:'#e67e22'      },
+    { key:'wrong',            label:'0 pts',  color:'#bdc3c7'      }
+  ];
+  sortOpts.forEach(function(opt){
+    var active = lbSortKey === opt.key;
+    html += '<button onclick="setLbSort(\''+opt.key+'\')" style="font-family:var(--fh);font-size:11px;font-weight:700;padding:5px 11px;border-radius:5px;letter-spacing:.3px;cursor:pointer;border:1.5px solid '+(active?opt.color:'transparent')+';background:'+(active?opt.color:'#fff')+';color:'+(active?'#fff':opt.color)+'">'+opt.label+'</button>';
+  });
+  html += '</div>';
+
   html+='<div class="lb-wrap"><table class="lb-table">';
   html+='<tr class="lb-th">' +
           '<td></td>' +
           '<td>Player</td>' +
-          '<td style="text-align:center" title="Round 1 points">R1</td>' +
-          '<td style="text-align:center" title="Round 2 points">R2</td>' +
-          '<td style="text-align:center" title="Award points">Awards</td>' +
-          '<td style="text-align:center" title="Exact scores">4pts</td>' +
-          '<td style="text-align:right">Total</td>' +
+          '<td style="text-align:center" title="Matches scored">Done</td>' +
+          '<td style="text-align:center" title="Exact score (4 pts)"><span style="cursor:pointer;border-bottom:1px dotted #ccc" onclick="setLbSort(\'exact_scores\')">4pts</span></td>' +
+          '<td style="text-align:center" title="Correct goal difference (3 pts)"><span style="cursor:pointer;border-bottom:1px dotted #ccc" onclick="setLbSort(\'correct_gd\')">3pts</span></td>' +
+          '<td style="text-align:center" title="Correct tendency (2 pts)"><span style="cursor:pointer;border-bottom:1px dotted #ccc" onclick="setLbSort(\'correct_tendency\')">2pts</span></td>' +
+          '<td style="text-align:center" title="Wrong tendency (0 pts)"><span style="cursor:pointer;border-bottom:1px dotted #ccc" onclick="setLbSort(\'wrong\')">0pts</span></td>' +
+          '<td style="text-align:right"><span style="cursor:pointer;border-bottom:1px dotted #ccc" onclick="setLbSort(\'total_pts\')">Points</span></td>' +
         '</tr>';
-  lbData.forEach(function(r,i){
+  sortedData.forEach(function(r,i){
     var isMe2=r.user_id===me.id;
     var bonus=Number(r.bonus_pts)||0;
-    var r1 = Number(r.round1_pts) || 0;
-    var r2 = Number(r.round2_pts) || 0;
-    var aw = Number(r.award_pts) || 0;
-    html+='<tr class="lb-tr'+(isMe2?' me':'')+'">';
+    var isExpanded = expandedUid === r.user_id;
+    var canExpand = isMe2;  // only the user's own row is expandable (RLS would block fetching others' picks)
+    var rowAttrs = canExpand ? ' style="cursor:pointer" onclick="toggleLbBreakdown(\''+r.user_id+'\')"' : '';
+    var arrow = canExpand ? (isExpanded ? '▾ ' : '▸ ') : '';
+    html+='<tr class="lb-tr'+(isMe2?' me':'')+(isExpanded?' lb-expanded':'')+'"'+rowAttrs+'>';
     html+='<td class="lb-rk '+(rkCls[i]||'')+'">'+(i+1)+'</td>';
-    html+='<td><div class="lb-nm">'+esc(r.display_name||'Player')+(isMe2?' <span style="color:var(--muted);font-size:11px">(me)</span>':'')+'</div></td>';
-    html+='<td class="lb-n" style="color:var(--navy)">'+fmtPts(r1)+'</td>';
-    html+='<td class="lb-n" style="color:#0d4a2a">'+fmtPts(r2)+'</td>';
-    html+='<td class="lb-n" style="color:var(--gold)">'+fmtPts(aw)+'</td>';
-    html+='<td class="lb-n" style="color:#2ecc71">'+(r.exact_scores||0)+'</td>';
+    html+='<td><div class="lb-nm">'+arrow+esc(r.display_name||'Player')+(isMe2?' <span style="color:var(--muted);font-size:11px">(me'+(canExpand?(isExpanded?' — click to collapse':' — click to expand'):'')+')</span>':'')+'</div></td>';
+    html+='<td class="lb-n">'+(r.scored_matches||0)+'</td>';
+    html+='<td class="lb-n" style="color:#2ecc71;font-weight:'+(lbSortKey==='exact_scores'?'800':'700')+'">'+(r.exact_scores||0)+'</td>';
+    html+='<td class="lb-n" style="color:var(--gold);font-weight:'+(lbSortKey==='correct_gd'?'800':'700')+'">'+(r.correct_gd||0)+'</td>';
+    html+='<td class="lb-n" style="color:#e67e22;font-weight:'+(lbSortKey==='correct_tendency'?'800':'700')+'">'+(r.correct_tendency||0)+'</td>';
+    html+='<td class="lb-n" style="color:#9aa0a8;font-weight:'+(lbSortKey==='wrong'?'800':'700')+'">'+(r.wrong||0)+'</td>';
     html+='<td><div class="lb-pts">'+fmtPts(r.total_pts||0)+'</div>'+(bonus>0?'<div class="lb-bns">+'+fmtPts(bonus)+' bonus</div>':'')+'</td>';
     html+='</tr>';
+
+    // Inline breakdown row when this is the user's own row AND expanded
+    if (isExpanded && canExpand) {
+      html += '<tr class="lb-breakdown-row"><td colspan="8" style="padding:0;background:#fbfcfd;border-bottom:1px solid var(--border)">';
+      html += '<div id="lb-breakdown-content" style="padding:14px 18px">';
+      if (myBreakdown === null) {
+        html += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:14px"><span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle"></span> Loading your match breakdown...</div>';
+      } else {
+        html += renderBreakdownContent(myBreakdown);
+      }
+      html += '</div></td></tr>';
+    }
   });
   html+='</table></div>';
   if(lbMode==='global'&&lbData.length===LB_PAGE){
     html+='<div class="lb-more" onclick="loadMoreLb()">Load more ↓</div>';
   }
   document.getElementById('panel-leaderboard').innerHTML=html;
+}
+
+// Re-sort the existing leaderboard data without refetching
+function setLbSort(key) {
+  lbSortKey = key;
+  renderLb();
+}
+
+// Toggle the per-match breakdown for the current user only
+function toggleLbBreakdown(uid) {
+  if (uid !== me.id) return;   // only self-expand allowed
+  if (expandedUid === uid) {
+    expandedUid = null;
+    renderLb();
+    return;
+  }
+  expandedUid = uid;
+  // If we don't have a cached breakdown, fetch it
+  if (myBreakdown === null) {
+    fetchMyBreakdown();
+  }
+  renderLb();
+}
+
+// Fetch the scored_predictions rows for the current user, with match metadata
+function fetchMyBreakdown() {
+  // Pull every scored prediction the user has, with match data
+  sb.from('scored_predictions')
+    .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
+    .eq('user_id', me.id)
+    .then(function(r) {
+      if (r.error) {
+        myBreakdown = { error: r.error.message };
+      } else {
+        myBreakdown = r.data || [];
+      }
+      // Re-render only the breakdown content area if it's still in DOM
+      var el = document.getElementById('lb-breakdown-content');
+      if (el) {
+        el.innerHTML = renderBreakdownContent(myBreakdown);
+      }
+    });
+}
+
+function renderBreakdownContent(data) {
+  if (data && data.error) {
+    return '<div style="color:var(--red);font-size:13px">Failed to load: ' + esc(data.error) + '</div>';
+  }
+  if (!data || !data.length) {
+    return '<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">No scored matches yet. Points appear once results are entered.</div>';
+  }
+
+  // Group by base_pts tier — 4, 3, 2, 0
+  var groups = { 4: [], 3: [], 2: [], 0: [] };
+  data.forEach(function(p) { if (groups[p.base_pts] !== undefined) groups[p.base_pts].push(p); });
+
+  var tierColors = { 4:'#2ecc71', 3:'var(--gold)', 2:'#e67e22', 0:'#9aa0a8' };
+  var tierLabels = { 4:'Exact scores (4 pts)', 3:'Correct goal diff (3 pts)', 2:'Correct tendency (2 pts)', 0:'Wrong tendency (0 pts)' };
+  var html = '';
+  html += '<div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);letter-spacing:.3px;margin-bottom:10px">YOUR MATCH BREAKDOWN</div>';
+
+  [4, 3, 2, 0].forEach(function(tier) {
+    var matches = groups[tier];
+    if (!matches.length) return;
+    html += '<div style="margin-bottom:14px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
+    html += '<span style="background:'+tierColors[tier]+';color:#fff;font-family:var(--fh);font-weight:700;font-size:11px;padding:3px 8px;border-radius:10px;letter-spacing:.3px">'+tierLabels[tier]+'</span>';
+    html += '<span style="font-size:11px;color:var(--muted)">'+matches.length+' match'+(matches.length===1?'':'es')+'</span>';
+    html += '</div>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px">';
+    matches.forEach(function(m) {
+      var roundLabel = m.round === 2 ? 'R2' : 'R1';
+      var stageLabel = m.stage === 'group' ? 'Group' : (STAGE_LABELS[m.stage] || m.stage);
+      html += '<div style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">';
+      html += '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="color:var(--navy);font-weight:600">'+esc(m.team_a)+' '+m.pred_a+'-'+m.pred_b+' '+esc(m.team_b)+'</span></div>';
+      html += '<div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;font-size:10px;color:var(--muted)">';
+      html += '<span style="font-weight:600">'+stageLabel+' · '+roundLabel+'</span>';
+      html += '<span>Actual: '+m.act_a+'-'+m.act_b+(m.final_pts && m.final_pts > m.base_pts ? ' · earned '+fmtPts(m.final_pts):'')+'</span>';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    html += '</div>';
+  });
+
+  return html;
 }
 function loadMoreLb(){
   sb.from('leaderboard').select('*')
