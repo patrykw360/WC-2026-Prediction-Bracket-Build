@@ -650,10 +650,23 @@ function renderRound2Section(isMe) {
       var dis = canEdit ? '' : ' disabled';
       var ev = canEdit ? ' oninput="onR2KoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"' : '';
 
-      // Real team names from official bracket (or result if entered)
-      var brTeams = officialBracket.koTeams[m.id] || {};
-      var teamA = res && res.team_a ? res.team_a : (brTeams.a || m.a);
-      var teamB = res && res.team_b ? res.team_b : (brTeams.b || m.b);
+      // Team names — for R2:
+      //   R32: ALWAYS the official Flashscore matchups (from data.js m.a/m.b).
+      //        Don't chain from group results or user predictions — every user
+      //        sees the same official R32 bracket, regardless of their group picks.
+      //        Actual entered results still take priority for showing real names
+      //        (in case admin made a correction or spelling differs).
+      //   R16+: Chain from official bracket (real R32 winners) → user's own R2 picks
+      //         fill in the rest of the bracket as we built earlier.
+      var teamA, teamB;
+      if (stage === 'r32') {
+        teamA = (res && res.team_a) ? res.team_a : m.a;
+        teamB = (res && res.team_b) ? res.team_b : m.b;
+      } else {
+        var brTeams = officialBracket.koTeams[m.id] || {};
+        teamA = (res && res.team_a) ? res.team_a : (brTeams.a || m.a);
+        teamB = (res && res.team_b) ? res.team_b : (brTeams.b || m.b);
+      }
 
       html += '<div class="'+rc+'" data-mid="'+m.id+'-r2">';
       html += '<div class="team home">'+esc(teamA)+'</div>';
