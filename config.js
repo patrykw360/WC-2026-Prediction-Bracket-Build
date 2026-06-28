@@ -6,13 +6,13 @@
 //   • Project URL  → looks like https://abcdefgh.supabase.co
 //   • anon public  → a long string starting with eyJ...
 
-const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-const SUPABASE_KEY = 'YOUR_SUPABASE_ANON_KEY';
+const SUPABASE_URL = 'https://honqqzgmbjneetuwhdef.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhvbnFxemdtYmpuZWV0dXdoZGVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODg1NTksImV4cCI6MjA5NDE2NDU1OX0.RXX5TlmHJTg9vU2M-695zfHUKfoyx1JKYdioWoZ-vFc';
 
 // ─── Safety check: warn clearly if the keys haven't been set ───
 (function(){
-  var bad = !SUPABASE_URL || SUPABASE_URL.indexOf('YOUR_') === 0 ||
-            !SUPABASE_KEY || SUPABASE_KEY.indexOf('YOUR_') === 0;
+  var bad = !SUPABASE_URL || SUPABASE_URL.https://honqqzgmbjneetuwhdef.supabase.co'||
+            !SUPABASE_KEY || SUPABASE_KEY.'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhvbnFxemdtYmpuZWV0dXdoZGVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1ODg1NTksImV4cCI6MjA5NDE2NDU1OX0.RXX5TlmHJTg9vU2M-695zfHUKfoyx1JKYdioWoZ-vFc';
   if (bad) {
     document.addEventListener('DOMContentLoaded', function(){
       document.body.innerHTML =
