@@ -228,12 +228,23 @@ function buildBracket(predictions) {
   }
 
   // Fill R32
-  Object.keys(R32_MAP).forEach(function(matchId) {
-    var slot = R32_MAP[matchId];
-    koTeams[matchId] = {
-      a: resolveSlot(slot.a, matchId),
-      b: resolveSlot(slot.b, matchId)
-    };
+  // If KO_MATCHES has real team names (post-Flashscore-update), use them directly.
+  // Slot descriptions like "Winner Group A" or "Runner-up B" start with W/R/B,
+  // followed by space + uppercase identifier — those fall through to resolveSlot.
+  KO_MATCHES.filter(function(m){return m.stage==='r32';}).forEach(function(m) {
+    var aIsSlot = /^(Winner|Runner-up|Best 3rd)/i.test(m.a);
+    var bIsSlot = /^(Winner|Runner-up|Best 3rd)/i.test(m.b);
+    if (R32_MAP[m.id] && (aIsSlot || bIsSlot)) {
+      // Fall back to slot-based resolution (for pre-Flashscore data)
+      var slot = R32_MAP[m.id];
+      koTeams[m.id] = {
+        a: aIsSlot ? resolveSlot(slot.a, m.id) : m.a,
+        b: bIsSlot ? resolveSlot(slot.b, m.id) : m.b
+      };
+    } else {
+      // Official team names already in data.js — use directly
+      koTeams[m.id] = { a: m.a, b: m.b };
+    }
   });
 
   // ─── R32 → R16 ───
