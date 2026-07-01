@@ -1,11 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
-// Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
-// ═══════════════════════════════════════════════════════════════
-
-// ─────────────────────────────────────────────────────────────
-// STATE
-// ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
