@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════
+// APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
+// Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
@@ -686,7 +694,8 @@ function renderRound2Section(isMe) {
       var pw = pred ? pred.w : '';
       var hasPred = pa !== null && pb !== null;
       var bp = (hasPred && res) ? scoreP(pa, pb, res.goals_a, res.goals_b) : null;
-      var fp = bp !== null ? Number(bp) : null;
+      var mult = res ? Number(res.multiplier || 1) : 1;
+      var fp = bp !== null ? Math.round(bp * mult * 100) / 100 : null;
       var rc = 'ko-match-row' + (bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
       var canEdit = isMe && !locked;
       var dis = canEdit ? '' : ' disabled';
@@ -721,6 +730,7 @@ function renderRound2Section(isMe) {
       html += '<input type="number" min="0" max="20" value="'+(pb!==null?pb:'')+'" class="s-inp'+(pb!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="b"'+dis+ev+'>';
       if (res) html += '<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if (fp !== null) html += '<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
+      if (mult > 1 && bp > 0) html += '<span class="mx-tag">×'+mult.toFixed(2)+'</span>';
       if (locked && !res) html += '<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
       if (savingSet['r2_'+m.id]) html += '<span class="sv-dot"></span>';
       html += '</div>';
