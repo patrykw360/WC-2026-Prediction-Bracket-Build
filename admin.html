@@ -103,6 +103,14 @@
       <div id="tournament-controls"><div class="panel-load"><div class="spinner"></div> Loading...</div></div>
     </div>
 
+    <!-- BACKFILL R1 KO TEAMS -->
+    <div class="admin-card">
+      <h2>🔧 Backfill R1 Knockout Team Names</h2>
+      <p class="muted">One-time migration. Iterates every user's R1 knockout predictions and stores their bracket-derived team names for scoring. Run this AFTER applying batch_m.sql. After running, R1 KO scoring uses the team-match rule.</p>
+      <div id="backfill-status" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
+      <button class="btn-primary" onclick="runR1KoBackfill()">Run backfill</button>
+    </div>
+
     <!-- ROSTER PASTE-IN -->
     <div class="admin-card">
       <h2>📋 Squad Rosters</h2>
@@ -176,6 +184,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script src="data.js"></script>
+<script src="bracket.js"></script>
 <script>
 // All teams from data.js
 var ALL_TEAMS = [];
@@ -1026,6 +1035,117 @@ function toggleR2Round(round) {
       toast((newState ? '🔓 Unlocked ' : '🔒 Locked ') + labelMap[round], 'ok');
     });
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// BACKFILL R1 KO team names
+// Iterates all users, rebuilds their bracket from their group predictions,
+// and updates their R1 KO prediction rows with the derived team names.
+// Idempotent — safe to re-run. Only updates rows where pred_team_a is null.
+// ─────────────────────────────────────────────────────────────
+function setBackfillStatus(msg) {
+  document.getElementById('backfill-status').innerHTML = msg;
+}
+
+function runR1KoBackfill() {
+  if (!confirm('This will update every user\'s R1 knockout prediction rows to include their bracket-derived team names. Existing team_a/team_b entries won\'t be overwritten. Continue?')) return;
+
+  setBackfillStatus('<span class="spinner"></span> Loading users...');
+
+  // Get all user IDs (paginated in case there's a lot)
+  var allUserIds = [];
+  function fetchUsers(offset) {
+    return sb.from('profiles').select('id').range(offset, offset + 999).then(function(r) {
+      if (r.error) throw r.error;
+      var batch = (r.data || []).map(function(x){return x.id;});
+      allUserIds = allUserIds.concat(batch);
+      if (batch.length === 1000) return fetchUsers(offset + 1000);
+      return allUserIds;
+    });
+  }
+
+  fetchUsers(0).then(function(userIds) {
+    setBackfillStatus('Found ' + userIds.length + ' users. Processing...');
+    return processUsers(userIds);
+  }).catch(function(e) {
+    setBackfillStatus('<span style="color:var(--red)">Error: ' + (e.message || e) + '</span>');
+  });
+}
+
+function processUsers(userIds) {
+  var koMatchIds = KO_MATCHES.map(function(m){return m.id;});
+  var totalUpdated = 0;
+  var totalUsers = userIds.length;
+  var processed = 0;
+
+  function processNext() {
+    if (processed >= userIds.length) {
+      setBackfillStatus('<span style="color:var(--green)">✓ Backfill complete. ' + totalUpdated + ' predictions updated across ' + totalUsers + ' users.</span>');
+      return Promise.resolve();
+    }
+    var uid = userIds[processed];
+    processed++;
+
+    // Fetch this user's R1 predictions (all of them: group + KO)
+    return sb.from('predictions')
+      .select('match_id,goals_a,goals_b,winner,pred_team_a,pred_team_b')
+      .eq('user_id', uid)
+      .eq('round', 1)
+      .then(function(r) {
+        if (r.error) throw r.error;
+        var preds = {};
+        (r.data || []).forEach(function(p) {
+          preds[p.match_id] = {
+            a: p.goals_a, b: p.goals_b, w: p.winner,
+            pred_team_a: p.pred_team_a, pred_team_b: p.pred_team_b
+          };
+        });
+
+        // Build the user's personal bracket
+        var bracket;
+        try { bracket = buildBracket(preds); }
+        catch (e) { console.warn('User', uid, 'bracket build failed:', e); return; }
+
+        // For each KO match: if user has a prediction and no pred_team stored yet, update
+        var updates = [];
+        koMatchIds.forEach(function(mid) {
+          var pred = preds[mid];
+          if (!pred || pred.a === null || pred.a === undefined) return;
+          if (pred.pred_team_a && pred.pred_team_b) return; // already backfilled
+          var m = KO_MATCHES.find(function(x){return x.id===mid;});
+          var br = bracket.koTeams[mid] || {};
+          var teamA = br.a || m.a;
+          var teamB = br.b || m.b;
+          updates.push({
+            user_id: uid,
+            match_id: mid,
+            goals_a: pred.a,
+            goals_b: pred.b,
+            winner: pred.w || null,
+            round: 1,
+            pred_team_a: teamA,
+            pred_team_b: teamB,
+            updated_at: new Date().toISOString()
+          });
+        });
+
+        if (updates.length === 0) return;
+
+        return sb.from('predictions').upsert(updates, { onConflict: 'user_id,match_id,round' })
+          .then(function(r2) {
+            if (r2.error) { console.warn('Upsert error for', uid, r2.error); return; }
+            totalUpdated += updates.length;
+          });
+      })
+      .then(function() {
+        if (processed % 5 === 0 || processed === totalUsers) {
+          setBackfillStatus('Processing ' + processed + ' / ' + totalUsers + ' users... ' + totalUpdated + ' predictions updated.');
+        }
+        return processNext();
+      });
+  }
+
+  return processNext();
 }
 </script>
 </body>
