@@ -528,7 +528,8 @@ function renderPredict(){
       if(hasPred)filled++;
       // Auto-filled: no points awarded
       var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
-      var fp=bp!==null?Number(bp):null;
+      var mult=res?Number(res.multiplier||1):1;
+      var fp=bp!==null?Math.round(bp*mult*100)/100:null;
       if(fp!==null)pts+=fp;
       var lockedNoPred = locked && !hasPred;
       var rc='ko-match-row'+(bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred&&!isAuto?' has-p':'')+(lockedNoPred||isAuto?' locked-no-pred':'');
@@ -548,6 +549,7 @@ function renderPredict(){
       html+='<input type="number" min="0" max="20" value="'+(pb!==null?pb:'')+'" class="s-inp'+(pb!==null?' filled':'')+(locked?' locked':'')+'" placeholder="-" data-side="b"'+dis+ev+'>';
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
+      if(mult>1&&bp>0)html+='<span class="mx-tag">×'+mult.toFixed(2)+'</span>';
       if(isAuto)html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
       else if(lockedNoPred)html+='<span class="locked-badge">🔒 Missed</span>';
       else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
