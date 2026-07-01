@@ -901,15 +901,27 @@ function saveResultRow(matchId, isKnockout, teamA, teamB) {
 // ─────────────────────────────────────────────────────────────
 // TOURNAMENT CONTROLS (admin-only flags in tournament_settings)
 // ─────────────────────────────────────────────────────────────
-var tournamentControls = { r2_locked: false, round2_open: false };
+var tournamentControls = {
+  r2_locked: false,
+  round2_open: false,
+  r2_r16_unlocked: false,
+  r2_qf_unlocked: false,
+  r2_sf_unlocked: false,
+  r2_final_unlocked: false
+};
 
 function loadTournamentControls() {
   Promise.all([
-    sb.from('tournament_settings').select('r2_locked').eq('id', 1).single(),
+    sb.from('tournament_settings').select('r2_locked,r2_r16_unlocked,r2_qf_unlocked,r2_sf_unlocked,r2_final_unlocked').eq('id', 1).single(),
     sb.from('tournament_state').select('round2_open').single()
   ]).then(function(rs) {
-    tournamentControls.r2_locked = !!(rs[0].data && rs[0].data.r2_locked);
-    tournamentControls.round2_open = !!(rs[1].data && rs[1].data.round2_open);
+    var t = rs[0].data || {};
+    tournamentControls.r2_locked        = !!t.r2_locked;
+    tournamentControls.r2_r16_unlocked  = !!t.r2_r16_unlocked;
+    tournamentControls.r2_qf_unlocked   = !!t.r2_qf_unlocked;
+    tournamentControls.r2_sf_unlocked   = !!t.r2_sf_unlocked;
+    tournamentControls.r2_final_unlocked = !!t.r2_final_unlocked;
+    tournamentControls.round2_open      = !!(rs[1].data && rs[1].data.round2_open);
     renderTournamentControls();
   }).catch(function(e) {
     document.getElementById('tournament-controls').innerHTML =
@@ -921,18 +933,41 @@ function renderTournamentControls() {
   var locked = tournamentControls.r2_locked;
   var open = tournamentControls.round2_open;
 
-  var html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8f9fc;border:1px solid var(--border);border-radius:8px">';
+  // ─ Global R2 lock row ─
+  var html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f8f9fc;border:1px solid var(--border);border-radius:8px;margin-bottom:12px">';
   html += '<div style="flex:1">';
-  html += '<div style="font-family:var(--fh);font-weight:700;color:var(--navy);font-size:14px;margin-bottom:3px">Round 2 lock</div>';
+  html += '<div style="font-family:var(--fh);font-weight:700;color:var(--navy);font-size:14px;margin-bottom:3px">Round 2 global lock</div>';
   if (!open) {
-    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 isn\'t available yet — it auto-opens when all 72 group results are entered. The lock toggle becomes meaningful after that.</div>';
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 isn\'t available yet — it auto-opens when all 72 group results are entered. Per-round toggles below become meaningful after that.</div>';
   } else if (locked) {
-    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 picks are <strong style="color:var(--red)">LOCKED</strong>. No user can edit their R2 predictions. Unlock to reopen.</div>';
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 is <strong style="color:var(--red)">GLOBALLY LOCKED</strong>. Overrides all per-round toggles below. Unlock to restore per-round control.</div>';
   } else {
-    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 is <strong style="color:var(--green)">OPEN</strong>. Users can freely edit their R2 picks. Lock when you\'re ready to freeze them.</div>';
+    html += '<div style="font-size:12px;color:var(--muted);line-height:1.4">Round 2 is <strong style="color:var(--green)">OPEN</strong>. Use the per-round toggles below to control which knockout rounds users can edit.</div>';
   }
   html += '</div>';
   html += '<button onclick="toggleR2Lock()" style="font-family:var(--fh);font-size:12px;font-weight:700;padding:10px 18px;background:'+(locked?'var(--green)':'var(--red)')+';color:#fff;border:none;border-radius:7px;cursor:pointer;letter-spacing:.3px;white-space:nowrap;margin-left:14px">'+(locked?'🔓 Unlock R2':'🔒 Lock R2 now')+'</button>';
+  html += '</div>';
+
+  // ─ Per-round unlock toggles ─
+  html += '<div style="padding:14px 16px;background:#f8f9fc;border:1px solid var(--border);border-radius:8px">';
+  html += '<div style="font-family:var(--fh);font-weight:700;color:var(--navy);font-size:14px;margin-bottom:4px">Per-round R2 unlock</div>';
+  html += '<div style="font-size:12px;color:var(--muted);line-height:1.4;margin-bottom:14px">Unlock a round to open predictions for it. Unlocking the NEXT round automatically freezes the previous one. R32 starts editable by default; unlock R16 when R32 results are all entered.</div>';
+
+  var rounds = [
+    { key:'r16',   label:'Round of 16', state: tournamentControls.r2_r16_unlocked },
+    { key:'qf',    label:'Quarter-finals', state: tournamentControls.r2_qf_unlocked },
+    { key:'sf',    label:'Semi-finals', state: tournamentControls.r2_sf_unlocked },
+    { key:'final', label:'Final + 3rd Place', state: tournamentControls.r2_final_unlocked }
+  ];
+
+  rounds.forEach(function(r) {
+    var unlocked = r.state;
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#fff;border:1px solid var(--border);border-radius:6px;margin-bottom:8px">';
+    html += '<div><strong style="font-family:var(--fh);color:var(--navy);font-size:13px">'+r.label+'</strong>';
+    html += ' <span style="font-size:11px;color:'+(unlocked?'var(--green)':'var(--muted)')+';margin-left:6px">'+(unlocked?'✓ UNLOCKED':'🔒 Locked')+'</span></div>';
+    html += '<button onclick="toggleR2Round(\''+r.key+'\')" style="font-family:var(--fh);font-size:11px;font-weight:700;padding:7px 13px;background:'+(unlocked?'#eee':'var(--green)')+';color:'+(unlocked?'#555':'#fff')+';border:none;border-radius:5px;cursor:pointer;letter-spacing:.3px">'+(unlocked?'Lock again':'Unlock')+'</button>';
+    html += '</div>';
+  });
   html += '</div>';
 
   document.getElementById('tournament-controls').innerHTML = html;
@@ -941,8 +976,8 @@ function renderTournamentControls() {
 function toggleR2Lock() {
   var newState = !tournamentControls.r2_locked;
   var confirmMsg = newState
-    ? 'Lock Round 2? No user will be able to edit their R2 picks after this.'
-    : 'Unlock Round 2? Users will be able to edit their R2 picks again.';
+    ? 'Lock Round 2 globally? No user will be able to edit any R2 predictions after this.'
+    : 'Unlock Round 2 globally? Per-round toggles will take over.';
   if (!confirm(confirmMsg)) return;
 
   sb.auth.getSession().then(function(s) {
@@ -956,6 +991,39 @@ function toggleR2Lock() {
       tournamentControls.r2_locked = newState;
       renderTournamentControls();
       toast(newState ? '🔒 Round 2 locked' : '🔓 Round 2 unlocked', 'ok');
+    });
+  });
+}
+
+function toggleR2Round(round) {
+  // round: 'r16' | 'qf' | 'sf' | 'final'
+  var colMap = {
+    r16:  'r2_r16_unlocked',
+    qf:   'r2_qf_unlocked',
+    sf:   'r2_sf_unlocked',
+    final:'r2_final_unlocked'
+  };
+  var col = colMap[round];
+  if (!col) return;
+  var newState = !tournamentControls[col];
+  var labelMap = { r16:'Round of 16', qf:'Quarter-finals', sf:'Semi-finals', final:'Final + 3rd' };
+  var confirmMsg = newState
+    ? 'Unlock ' + labelMap[round] + '? Users will be able to predict this round. If a previous round was open, it will become read-only for users.'
+    : 'Lock ' + labelMap[round] + ' again? Users won\'t be able to edit this round\'s predictions.';
+  if (!confirm(confirmMsg)) return;
+
+  sb.auth.getSession().then(function(s) {
+    var payload = {
+      id: 1,
+      updated_at: new Date().toISOString(),
+      updated_by: s.data.session.user.id
+    };
+    payload[col] = newState;
+    sb.from('tournament_settings').upsert(payload, { onConflict: 'id' }).then(function(r) {
+      if (r.error) { toast('Failed: ' + r.error.message, 'err'); return; }
+      tournamentControls[col] = newState;
+      renderTournamentControls();
+      toast((newState ? '🔓 Unlocked ' : '🔒 Locked ') + labelMap[round], 'ok');
     });
   });
 }
