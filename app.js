@@ -625,25 +625,35 @@ function renderPredict(){
 function renderRound2Section(isMe) {
   // Use Round 2 predictions for what the user submitted
   var preds = isMe ? myPredsR2 : viewedPredsR2;
+  var r1Preds = isMe ? myPreds : viewedPreds;
 
   // ── Build the bracket for THIS user's R2 view ──
   // Priority order for each match (winners chain forward into next round's teams):
   //   1. Actual entered result  (real outcome, beats everything)
   //   2. User's own R2 prediction  (their hopes — fills in future rounds before results exist)
+  //   3. User's R1 group prediction (needed so isGroupStageComplete passes and R32 seeds)
   // This way R16/QF/SF/Final team names auto-populate from the user's R32 picks,
   // matching how R1 already works. Once admin enters the real R32 result, that
   // takes over and the user sees real names.
   var chainPreds = {};
+  // 1) Seed with user's R1 predictions (needed for group-stage-complete check + fallback KO chain)
+  Object.keys(r1Preds).forEach(function(id) {
+    var p = r1Preds[id];
+    if (p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined) {
+      chainPreds[id] = { a: p.a, b: p.b, w: p.w || null };
+    }
+  });
+  // 2) Overlay R2 KO predictions on top (user's Round 2 picks trump their old R1 picks for chaining)
   Object.keys(preds).forEach(function(id) {
     var p = preds[id];
     if (p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined) {
       chainPreds[id] = { a: p.a, b: p.b, w: p.w || null };
     }
   });
+  // 3) Overlay actual entered results (real outcomes beat everything)
   Object.keys(allResults).forEach(function(id){
     var r = allResults[id];
     if (r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined) {
-      // Actual results override user predictions for chaining
       chainPreds[id] = { a: r.goals_a, b: r.goals_b, w: r.winner || null };
     }
   });
