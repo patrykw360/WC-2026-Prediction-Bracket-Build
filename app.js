@@ -721,6 +721,7 @@ function renderRound2Section(isMe) {
       var bp = (hasPred && res) ? scoreP(pa, pb, res.goals_a, res.goals_b) : null;
       var mult = res ? Number(res.multiplier || 1) : 1;
       var fp = bp !== null ? Math.round(bp * mult * 100) / 100 : null;
+      if (fp !== null) pts += fp;   // include R2 KO in the live "pts" stat
       var rc = 'ko-match-row' + (bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
       var canEdit = isMe && !locked;
       var dis = canEdit ? '' : ' disabled';
@@ -1205,37 +1206,14 @@ function fetchBreakdown(uid) {
     return;
   }
 
-  // Other user: first verify a shared league exists (RLS would block the prediction query otherwise,
-  // but checking explicitly lets us show a clean "not in your league" message instead of empty data).
-  // Strategy: query group_members for any row matching (my groups, this user). Returns 0 rows = not a league-mate.
-  if (!myGroups.length) {
-    breakdownCache[uid] = { restricted: true };
-    refreshBreakdownPanel(uid);
-    return;
-  }
-  var myGroupIds = myGroups.map(function(g){return g.id;});
-  sb.from('group_members').select('user_id').in('group_id', myGroupIds).eq('user_id', uid).then(function(check) {
-    var isLeagueMate = (check.data || []).length > 0;
-    if (!isLeagueMate) {
-      breakdownCache[uid] = { restricted: true };
+  // Fetch full breakdown for any user (RLS now allows all authenticated reads)
+  sb.from('scored_predictions')
+    .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
+    .eq('user_id', uid)
+    .then(function(r) {
+      breakdownCache[uid] = r.error ? { error: r.error.message } : (r.data || []);
       refreshBreakdownPanel(uid);
-      return;
-    }
-    // Fetch only knockout matches (R32 onwards). Group matches stay hidden.
-    // Knockout stages: r32, r16, qf, sf, 3rd, final
-    sb.from('scored_predictions')
-      .select('match_id,round,pred_a,pred_b,act_a,act_b,base_pts,final_pts,team_a,team_b,stage')
-      .eq('user_id', uid)
-      .in('stage', ['r32','r16','qf','sf','3rd','final'])
-      .then(function(r) {
-        if (r.error) {
-          breakdownCache[uid] = { error: r.error.message };
-        } else {
-          breakdownCache[uid] = { knockoutOnly: true, matches: r.data || [] };
-        }
-        refreshBreakdownPanel(uid);
-      });
-  });
+    });
 }
 
 function refreshBreakdownPanel(uid) {
@@ -1250,30 +1228,10 @@ function renderBreakdownContent(data, row) {
   if (data && data.error) {
     return '<div style="color:var(--red);font-size:13px">Failed to load: ' + esc(data.error) + '</div>';
   }
-  if (data && data.restricted) {
-    return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;color:var(--muted);font-size:13px;text-align:center">' +
-             '<div style="font-size:24px">🔒</div>' +
-             '<div><strong style="color:var(--navy);font-family:var(--fh)">'+esc(row.display_name||'This player')+'</strong> is not in any of your leagues.</div>' +
-             '<div style="font-size:12px;max-width:340px">Join a league with them to see their knockout predictions. Or invite them to yours — share your league code from the Groups tab.</div>' +
-           '</div>';
-  }
-
-  // Determine the matches array and whether this is knockout-only
-  var matches, knockoutOnly = false, isSelf = false;
-  if (Array.isArray(data)) {
-    matches = data;
-    isSelf = (row.user_id === me.id);
-  } else if (data && data.knockoutOnly) {
-    matches = data.matches || [];
-    knockoutOnly = true;
-  } else {
-    matches = [];
-  }
+  var matches = Array.isArray(data) ? data : [];
+  var isSelf = (row.user_id === me.id);
 
   if (!matches.length) {
-    if (knockoutOnly) {
-      return '<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">'+esc(row.display_name||'This player')+' hasn\'t scored any knockout matches yet. Points appear once knockout results are entered.</div>';
-    }
     return '<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">No scored matches yet. Points appear once results are entered.</div>';
   }
 
@@ -1286,11 +1244,8 @@ function renderBreakdownContent(data, row) {
   var html = '';
   var headerLabel = isSelf
     ? 'YOUR MATCH BREAKDOWN'
-    : esc((row.display_name||'PLAYER').toUpperCase()) + '\u2019S KNOCKOUT BREAKDOWN';
+    : esc((row.display_name||'PLAYER').toUpperCase()) + '\u2019S MATCH BREAKDOWN';
   html += '<div style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);letter-spacing:.3px;margin-bottom:10px">'+headerLabel+'</div>';
-  if (knockoutOnly) {
-    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;font-style:italic">Group stage picks are private. Showing knockout matches only (R32 → Final).</div>';
-  }
 
   [4, 3, 2, 0].forEach(function(tier) {
     var ms = groups[tier];
@@ -1426,43 +1381,31 @@ function closeModal(){document.getElementById('modal-bg').style.display='none';}
 function searchUsers(q){
   var key=q.trim().toLowerCase();
   if(srchCache[key]){renderSrch(srchCache[key]);return;}
-  // Only show users who share at least one league with me.
-  // Step 1: get all member rows for my groups.
-  if (!myGroups.length) {
-    // No leagues yet → empty result with a friendly hint shown by renderSrch
-    srchCache[key] = [];
-    renderSrch([]);
-    return;
-  }
-  var myGroupIds = myGroups.map(function(g){return g.id;});
-  sb.from('group_members').select('user_id,profiles(id,display_name)')
-    .in('group_id', myGroupIds)
-    .then(function(r){
-      if (r.error) { renderSrch([]); return; }
-      // Deduplicate by user_id
-      var seen = {};
-      var users = [];
-      (r.data||[]).forEach(function(row){
-        var p = row.profiles;
-        if (!p || seen[p.id]) return;
-        seen[p.id] = true;
-        if (!key || (p.display_name||'').toLowerCase().indexOf(key) !== -1) {
-          users.push({id: p.id, display_name: p.display_name});
-        }
+  // Fetch all authenticated users (paginated in case there are many)
+  var collected = [];
+  function fetchPage(offset) {
+    return sb.from('profiles').select('id,display_name').range(offset, offset + 999)
+      .then(function(r){
+        if (r.error) return collected;
+        var batch = r.data || [];
+        collected = collected.concat(batch);
+        if (batch.length === 1000) return fetchPage(offset + 1000);
+        return collected;
       });
-      users.sort(function(a,b){return (a.display_name||'').localeCompare(b.display_name||'');});
-      srchCache[key] = users;
-      renderSrch(users);
+  }
+  fetchPage(0).then(function(all){
+    var users = all.filter(function(u){
+      return !key || (u.display_name||'').toLowerCase().indexOf(key) !== -1;
     });
+    users.sort(function(a,b){return (a.display_name||'').localeCompare(b.display_name||'');});
+    srchCache[key] = users;
+    renderSrch(users);
+  });
 }
 function renderSrch(users){
   var el=document.getElementById('srch-list');
   if(!users.length){
-    if (!myGroups.length) {
-      el.innerHTML='<div class="modal-empty"><strong>You\'re not in any leagues yet.</strong><br><br>Go to the Groups tab to create or join a league. Then you can browse your league-mates\' picks here.</div>';
-    } else {
-      el.innerHTML='<div class="modal-empty">No league-mates match your search.</div>';
-    }
+    el.innerHTML='<div class="modal-empty">No players match your search.</div>';
     return;
   }
   el.innerHTML=users.map(function(u){
