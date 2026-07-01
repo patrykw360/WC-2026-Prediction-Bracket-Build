@@ -52,6 +52,46 @@ function isR2Locked(){
   // tournament_settings via admin.html → the tournament_state view picks it up.
   return !!(tournamentState && tournamentState.r2_locked);
 }
+
+// Per-round lock helpers. Each round is either:
+//   'editable'  — user can predict this round now
+//   'locked'    — inputs disabled, teams still visible via chain
+//   'frozen'    — user already predicted here, but round is done and can't change
+//
+// Rules (per user's spec):
+//   R32: editable UNTIL admin unlocks R16 (then frozen)
+//   R16: locked until admin unlocks R16; editable until QF unlocks (then frozen)
+//   QF: locked until admin unlocks QF; editable until SF unlocks (then frozen)
+//   SF: locked until admin unlocks SF; editable until Final unlocks (then frozen)
+//   Final + 3rd: locked until admin unlocks Final; editable indefinitely.
+function r2StageState(stage){
+  if (isR2Locked()) return 'locked';    // global R2 lock overrides everything
+  var ts = tournamentState || {};
+  var r16 = !!ts.r2_r16_unlocked;
+  var qf  = !!ts.r2_qf_unlocked;
+  var sf  = !!ts.r2_sf_unlocked;
+  var fin = !!ts.r2_final_unlocked;
+  if (stage === 'r32') {
+    return r16 ? 'frozen' : 'editable';
+  }
+  if (stage === 'r16') {
+    if (!r16) return 'locked';
+    return qf ? 'frozen' : 'editable';
+  }
+  if (stage === 'qf') {
+    if (!qf) return 'locked';
+    return sf ? 'frozen' : 'editable';
+  }
+  if (stage === 'sf') {
+    if (!sf) return 'locked';
+    return fin ? 'frozen' : 'editable';
+  }
+  if (stage === 'final' || stage === '3rd') {
+    if (!fin) return 'locked';
+    return 'editable';
+  }
+  return 'locked';
+}
 function fmtKO(iso){
   if(!iso)return '';
   var d=new Date(iso);
@@ -623,14 +663,24 @@ function renderRound2Section(isMe) {
     var ms = KO_MATCHES.filter(function(m){return m.stage===stage;}).sort(function(a,b){return a.s-b.s;});
     if (!ms.length) return;
 
-    html += '<div class="stage-hdr" style="background:linear-gradient(90deg,#1a7a4a 0%,#0d4a2a 100%)"><span class="stage-hdr-title">R2: '+STAGE_LABELS[stage]+'</span>';
+    var stageState = r2StageState(stage);
+    var isStageEditable = (stageState === 'editable');
+
+    // Per-round header — color reflects state
+    var hdrBg;
+    if (stageState === 'editable') hdrBg = 'linear-gradient(90deg,#1a7a4a 0%,#0d4a2a 100%)';
+    else if (stageState === 'locked') hdrBg = 'linear-gradient(90deg,#666 0%,#333 100%)';
+    else hdrBg = 'linear-gradient(90deg,#7a2a1e 0%,#a83a2a 100%)';  // frozen
+    html += '<div class="stage-hdr" style="background:'+hdrBg+'"><span class="stage-hdr-title">R2: '+STAGE_LABELS[stage]+'</span>';
     if (STAGE_DATES[stage]) html += '<span class="stage-hdr-sub">'+STAGE_DATES[stage]+'</span>';
+    if (stageState === 'locked') html += '<span class="stage-hdr-sub" style="margin-left:8px;background:rgba(255,255,255,.15);padding:2px 8px;border-radius:4px">🔒 Awaiting unlock</span>';
+    else if (stageState === 'frozen') html += '<span class="stage-hdr-sub" style="margin-left:8px;background:rgba(255,255,255,.15);padding:2px 8px;border-radius:4px">🔒 Frozen</span>';
     html += '</div>';
 
     ms.forEach(function(m) {
       var pred = preds[m.id] || null;
       var res = allResults[m.id] || null;
-      var locked = isR2Locked();        // R2 ignores per-match kickoff; admin lock only
+      var locked = !isStageEditable;
       var pa = pred ? pred.a : null;
       var pb = pred ? pred.b : null;
       var pw = pred ? pred.w : '';
@@ -642,14 +692,16 @@ function renderRound2Section(isMe) {
       var dis = canEdit ? '' : ' disabled';
       var ev = canEdit ? ' oninput="onR2KoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"' : '';
 
-      // Team names — for R2:
-      //   R32: ALWAYS the official Flashscore matchups (from data.js m.a/m.b).
-      //        Don't chain from group results or user predictions — every user
-      //        sees the same official R32 bracket, regardless of their group picks.
-      //        Actual entered results still take priority for showing real names
-      //        (in case admin made a correction or spelling differs).
-      //   R16+: Chain from official bracket (real R32 winners) → user's own R2 picks
-      //         fill in the rest of the bracket as we built earlier.
+      // Team name resolution per admin/state rules:
+      //   R32: Always use m.a/m.b (official Flashscore matchups from data.js).
+      //        Real results override for name display if entered.
+      //   R16+ when locked: chain from user's own R2 R32 predictions (their bracket)
+      //   R16+ when editable/frozen: chain uses actual admin-entered R32 results (real teams)
+      //
+      // The distinction: when a round is unlocked, admin should have entered the
+      // preceding round's real results, so the officialBracket built from
+      // chainPreds (which mixed user picks + real results) will resolve real teams
+      // for the newly-unlocked round.
       var teamA, teamB;
       if (stage === 'r32') {
         teamA = (res && res.team_a) ? res.team_a : m.a;
@@ -690,7 +742,7 @@ function renderRound2Section(isMe) {
       html += '</div>';
     });
 
-    if (isMe) {
+    if (isMe && isStageEditable) {
       html += '<div class="round-save-bar">';
       html += '<span class="round-save-status" id="status-r2-'+stage+'"></span>';
       html += '<button class="btn-round-save" id="btn-save-r2-'+stage+'" onclick="saveR2Round(\''+stage+'\')">Save R2 '+STAGE_LABELS[stage].toLowerCase()+'</button>';
@@ -703,7 +755,13 @@ function renderRound2Section(isMe) {
 
 // ─── Round 2 save handlers ───────────────────────────────────────────────
 function onR2KoInp(matchId, rowEl) {
-  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
+  // Determine which round this match belongs to and gate on its state
+  var match = KO_MATCHES.find(function(m){return m.id===matchId;});
+  var stage = match ? match.stage : null;
+  if (!stage || r2StageState(stage) !== 'editable') {
+    toast('This round is locked', 'err');
+    return;
+  }
   var aEl = rowEl.querySelector('[data-side="a"]');
   var bEl = rowEl.querySelector('[data-side="b"]');
   var a = aEl.value !== '' ? parseInt(aEl.value, 10) : null;
@@ -728,7 +786,12 @@ function onR2KoInp(matchId, rowEl) {
 }
 
 function onR2KoWinner(matchId, winner) {
-  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
+  var match = KO_MATCHES.find(function(m){return m.id===matchId;});
+  var stage = match ? match.stage : null;
+  if (!stage || r2StageState(stage) !== 'editable') {
+    toast('This round is locked', 'err');
+    return;
+  }
   var existing = myPredsR2[matchId] || {};
   sb.from('predictions').upsert(
     {user_id:me.id, match_id:matchId, goals_a:existing.a, goals_b:existing.b, winner:winner, round:2, updated_at:new Date().toISOString()},
@@ -742,7 +805,10 @@ function onR2KoWinner(matchId, winner) {
 }
 
 function saveR2Round(stage) {
-  if (isR2Locked()) { toast('Round 2 is locked', 'err'); return; }
+  if (r2StageState(stage) !== 'editable') {
+    toast('This round is locked', 'err');
+    return;
+  }
   var ids = KO_MATCHES.filter(function(m){return m.stage===stage;}).map(function(m){return m.id;});
   var btn = document.getElementById('btn-save-r2-'+stage);
   var status = document.getElementById('status-r2-'+stage);
