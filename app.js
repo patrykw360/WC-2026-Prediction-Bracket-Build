@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════
+// APP LOGIC  —  state, rendering, saving, leaderboard, groups, admin
+// Depends on: config.js (sb), data.js (GROUP_MATCHES, KO_MATCHES, ...)
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────────────────────
 var me, myProfile;
 var myPreds={}, allResults={};
 var myPredsR2={};                 // Round 2 predictions (official knockouts)
@@ -518,8 +526,16 @@ function renderPredict(){
       var hasPred=pa!==null&&pb!==null;
       var isAuto = !!autoFilled[m.id];
       if(hasPred)filled++;
-      // Auto-filled: no points awarded
-      var bp=(hasPred&&res&&!isAuto)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
+      // User's personal bracket teams for this slot
+      var brTeams = bracket.koTeams[m.id] || {};
+      var myTeamA = brTeams.a || m.a;
+      var myTeamB = brTeams.b || m.b;
+      // Team match gate: for KO scoring to award points, the user's slot
+      // must have the same two teams that admin recorded as playing this match.
+      var teamsMatch = res && res.team_a && res.team_b &&
+                       myTeamA === res.team_a && myTeamB === res.team_b;
+      // Auto-filled: no points awarded. Team mismatch: no points awarded.
+      var bp=(hasPred&&res&&!isAuto&&teamsMatch)?scoreP(pa,pb,res.goals_a,res.goals_b):null;
       var mult=res?Number(res.multiplier||1):1;
       var fp=bp!==null?Math.round(bp*mult*100)/100:null;
       if(fp!==null)pts+=fp;
@@ -528,10 +544,11 @@ function renderPredict(){
       var canEdit=isMe&&!locked;
       var dis=canEdit?'':' disabled';
       var ev=canEdit?' oninput="onKoInp(\''+m.id+'\',this.closest(\'.ko-match-row\'))"':'';
-      // Use real team names from result if available, else from bracket prediction, else slot description
-      var brTeams = bracket.koTeams[m.id] || {};
-      var teamA = res && res.team_a ? res.team_a : (brTeams.a || m.a);
-      var teamB = res && res.team_b ? res.team_b : (brTeams.b || m.b);
+      // Display: show the user's bracket teams (not the official ones) so they
+      // understand what they were actually predicting. This matches how R1 has
+      // always worked — user's personal bracket.
+      var teamA = myTeamA;
+      var teamB = myTeamB;
       html+='<div class="'+rc+'" data-mid="'+m.id+'">';
       html+='<div class="team home">'+esc(teamA)+'</div>';
       html+='<div class="ko-sc-cell">';
@@ -542,6 +559,10 @@ function renderPredict(){
       if(res)html+='<span class="act-sc">'+res.goals_a+':'+res.goals_b+'</span>';
       if(fp!==null)html+='<span class="pc pc-'+bp+'">'+fmtPts(fp)+'</span>';
       if(mult>1&&bp>0)html+='<span class="mx-tag">×'+mult.toFixed(2)+'</span>';
+      // Explain why no points when there IS a result and user predicted but teams don't match
+      if(hasPred&&!isAuto&&res&&!teamsMatch&&res.team_a){
+        html+='<span class="locked-badge" title="Your bracket had '+esc(myTeamA)+' vs '+esc(myTeamB)+' here, but the real match was '+esc(res.team_a)+' vs '+esc(res.team_b)+'.">⚠ Team mismatch · 0 pts</span>';
+      }
       if(isAuto)html+='<span class="locked-badge" title="You joined after kickoff. Real result shown; no points awarded.">🕒 Auto · 0 pts</span>';
       else if(lockedNoPred)html+='<span class="locked-badge">🔒 Missed</span>';
       else if(locked&&!res)html+='<span style="font-size:10px;color:#ccc;flex-shrink:0">🔒</span>';
@@ -903,6 +924,21 @@ function onInp(matchId,rowEl){
 // ─────────────────────────────────────────────────────────────
 // SAVE – KNOCKOUT
 // ─────────────────────────────────────────────────────────────
+// Returns the user's currently-predicted team names for a KO match slot.
+// Uses buildBracket over the user's own R1 predictions so teams chain
+// forward correctly. Falls back to KO_MATCHES.a/b when the slot can't
+// resolve yet (e.g. user hasn't finished predicting the feeding round).
+function getMyKoTeams(matchId) {
+  var m = KO_MATCHES.find(function(x){return x.id===matchId;});
+  if (!m) return { a: null, b: null };
+  var bracket = buildBracket(myPreds);
+  var br = bracket.koTeams[matchId] || {};
+  return {
+    a: br.a || m.a,
+    b: br.b || m.b
+  };
+}
+
 function onKoInp(matchId,rowEl){
   var aEl=rowEl.querySelector('[data-side="a"]');
   var bEl=rowEl.querySelector('[data-side="b"]');
@@ -915,8 +951,9 @@ function onKoInp(matchId,rowEl){
   clearTimeout(saveTimers['ko_'+matchId]);
   savingSet[matchId]=true;
   saveTimers['ko_'+matchId]=setTimeout(function(){
+    var teams = getMyKoTeams(matchId);
     sb.from('predictions').upsert(
-      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,winner:existing.w||null,round:1,updated_at:new Date().toISOString()},
+      {user_id:me.id,match_id:matchId,goals_a:a,goals_b:b,winner:existing.w||null,round:1,pred_team_a:teams.a,pred_team_b:teams.b,updated_at:new Date().toISOString()},
       {onConflict:'user_id,match_id,round'}
     ).then(function(r){
       delete savingSet[matchId];
@@ -929,8 +966,9 @@ function onKoInp(matchId,rowEl){
 
 function onKoWinner(matchId,winner){
   var existing=myPreds[matchId]||{};
+  var teams = getMyKoTeams(matchId);
   sb.from('predictions').upsert(
-    {user_id:me.id,match_id:matchId,goals_a:existing.a,goals_b:existing.b,winner:winner,round:1,updated_at:new Date().toISOString()},
+    {user_id:me.id,match_id:matchId,goals_a:existing.a,goals_b:existing.b,winner:winner,round:1,pred_team_a:teams.a,pred_team_b:teams.b,updated_at:new Date().toISOString()},
     {onConflict:'user_id,match_id,round'}
   ).then(function(r){
     if(r.error){toast('Save failed','err');return;}
@@ -975,7 +1013,14 @@ function saveRound(stage){
     if(a!==null&&b!==null&&!isNaN(a)&&!isNaN(b)){
       // preserve any AET winner already chosen
       var w=(myPreds[id]&&myPreds[id].w)?myPreds[id].w:null;
-      payload.push({user_id:me.id,match_id:id,goals_a:a,goals_b:b,winner:w,round:1,updated_at:new Date().toISOString()});
+      var row = {user_id:me.id,match_id:id,goals_a:a,goals_b:b,winner:w,round:1,updated_at:new Date().toISOString()};
+      // For KO stages, snapshot the user's bracket-derived teams for scoring
+      if (stage !== 'group') {
+        var teams = getMyKoTeams(id);
+        row.pred_team_a = teams.a;
+        row.pred_team_b = teams.b;
+      }
+      payload.push(row);
     } else {
       incomplete++;
     }
