@@ -601,7 +601,9 @@ function renderPredict(){
 
   // ── ROUND 2: Official knockout predictions (only once group stage results are all in) ──
   if (tournamentState.round2_open) {
-    html += renderRound2Section(isMe);
+    var r2Result = renderRound2Section(isMe);
+    html += r2Result.html;
+    pts += r2Result.pts;
   } else if (isMe && bracket.complete.group) {
     // Group stage complete in user's predictions, but Round 2 not open yet
     html += '<div style="background:#f4f6fb;border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin:18px 14px 0;font-size:13px;color:var(--muted);text-align:center">' +
@@ -639,6 +641,7 @@ function renderRound2Section(isMe) {
   // Use Round 2 predictions for what the user submitted
   var preds = isMe ? myPredsR2 : viewedPredsR2;
   var r1Preds = isMe ? myPreds : viewedPreds;
+  var r2Pts = 0;   // Accumulate R2 points here — added to overall total by caller
 
   // ── Build the bracket for THIS user's R2 view ──
   // Priority order for each match (winners chain forward into next round's teams):
@@ -721,7 +724,7 @@ function renderRound2Section(isMe) {
       var bp = (hasPred && res) ? scoreP(pa, pb, res.goals_a, res.goals_b) : null;
       var mult = res ? Number(res.multiplier || 1) : 1;
       var fp = bp !== null ? Math.round(bp * mult * 100) / 100 : null;
-      if (fp !== null) pts += fp;   // include R2 KO in the live "pts" stat
+      if (fp !== null) r2Pts += fp;   // include R2 KO in the live "pts" stat
       var rc = 'ko-match-row' + (bp===4?' sc-4':bp===3?' sc-3':bp===2?' sc-2':bp===0&&res?' sc-0':hasPred?' has-p':'');
       var canEdit = isMe && !locked;
       var dis = canEdit ? '' : ' disabled';
@@ -786,7 +789,7 @@ function renderRound2Section(isMe) {
     }
   });
 
-  return html;
+  return { html: html, pts: r2Pts };
 }
 
 // ─── Round 2 save handlers ───────────────────────────────────────────────
