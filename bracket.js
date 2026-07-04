@@ -326,3 +326,93 @@ function buildBracket(predictions) {
 
   return { koTeams: koTeams, complete: complete };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// buildBracketR2(predictions) — Round-2 bracket engine.
+//
+// Same chain logic as buildBracket, but R32 teams come DIRECTLY from
+// KO_MATCHES.a/b (the official Flashscore matchups in data.js) instead
+// of being derived from group predictions. This is what R2 needs —
+// every user sees the same official R32, then chains R16+ from their
+// R2 predictions (or actual results).
+//
+// Public API:
+//   buildBracketR2(predictions) → { koTeams: {...}, complete: {r32:..., r16:...} }
+// ═══════════════════════════════════════════════════════════════
+function buildBracketR2(predictions) {
+  var koTeams = {};
+  var complete = { r32: true, r16: false, qf: false, sf: false };
+
+  // R32: use official data.js team names directly
+  KO_MATCHES.filter(function(m){return m.stage==='r32';}).forEach(function(m) {
+    koTeams[m.id] = { a: m.a, b: m.b };
+  });
+
+  // Reuse the same chain logic. Local resolveKoSlot / chainRound identical to buildBracket.
+  function resolveKoSlot(slotDesc, koTeams, predictions) {
+    var match = slotDesc.match(/^([WL])\s+(\w+)$/);
+    if (!match) return null;
+    var type = match[1];
+    var sourceId = match[2];
+    var src = koTeams[sourceId];
+    if (!src) return null;
+    var pred = predictions[sourceId];
+    if (!pred) return null;
+    if (type === 'W') return koWinner(pred, src.a, src.b);
+    if (type === 'L') return koLoser(pred, src.a, src.b);
+    return null;
+  }
+
+  function chainRound(matches) {
+    matches.forEach(function(m) {
+      var aResolved = resolveKoSlot(m.a, koTeams, predictions);
+      var bResolved = resolveKoSlot(m.b, koTeams, predictions);
+      koTeams[m.id] = { a: aResolved || m.a, b: bResolved || m.b };
+    });
+  }
+
+  // Track completion
+  var r32Matches = KO_MATCHES.filter(function(m){return m.stage==='r32';});
+  var r32AllPredicted = r32Matches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.r32 = r32AllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='r16';}));
+
+  var r16Matches = KO_MATCHES.filter(function(m){return m.stage==='r16';});
+  var r16AllPredicted = r16Matches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.r16 = r16AllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='qf';}));
+
+  var qfMatches = KO_MATCHES.filter(function(m){return m.stage==='qf';});
+  var qfAllPredicted = qfMatches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.qf = qfAllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='sf';}));
+
+  var sfMatches = KO_MATCHES.filter(function(m){return m.stage==='sf';});
+  var sfAllPredicted = sfMatches.every(function(m) {
+    var p = predictions[m.id];
+    return p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined &&
+           (p.a !== p.b || p.w);
+  });
+  complete.sf = sfAllPredicted;
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='final';}));
+  chainRound(KO_MATCHES.filter(function(m){return m.stage==='3rd';}));
+
+  // Fallback for any unfilled slot
+  KO_MATCHES.forEach(function(m) {
+    if (!koTeams[m.id]) koTeams[m.id] = {a:m.a, b:m.b};
+  });
+
+  return { koTeams: koTeams, complete: complete };
+}
