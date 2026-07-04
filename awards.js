@@ -1,10 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// AWARDS  —  Golden Ball, Golden Boot, Golden Glove predictions
-// Each pick is worth 8 points if exact, 0 otherwise.
-// Picks lock at 2026-06-11 19:00 UTC (first match kickoff).
-// UX: pick country first, then pick player from that country.
-// ═══════════════════════════════════════════════════════════════
-
 var awardsState = {
   players: [],                  // [{id, team, name, position, jersey_num}]
   predictions: {},              // { golden_ball: player_id, ... }
