@@ -1,27 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
-// BRACKET ENGINE  —  auto-advances knockout matchups based on
-// the user's predictions, following FIFA 2026 rules.
-//
-// Public API:
-//   buildBracket(predictions) → { koTeams: { R32_01:{a:'Mexico',b:...}, ... }, complete: {group:true, r32:false, ...} }
-//
-// Depends on: GROUP_TEAMS, GROUP_MATCHES, KO_MATCHES (from data.js)
-// ═══════════════════════════════════════════════════════════════
 
-// ───────────────────────────────────────────────────────────────
-// FIFA Annex C — Best-3rd-place team routing
-// Maps the 8-letter combo of groups whose 3rd-place teams advance
-// to which 3rd-place team goes into which R32 match.
-//
-// Source: FIFA Regulations for the 2026 World Cup, Annex C
-// Key = sorted 8-letter combo (e.g. "ABCDEFGH")
-// Value = mapping of R32 slot → group letter whose 3rd-place team
-//         takes that slot
-//
-// The 8 R32 matches that take best-3rd teams (per Bracket_Map):
-//   M74=R32_02  M77=R32_05  M79=R32_07  M80=R32_08
-//   M81=R32_09  M82=R32_10  M85=R32_13  M87=R32_15
-// ───────────────────────────────────────────────────────────────
 const ANNEX_C = {
   // Most common combos — top half of the table from the Excel
   'ABCDEFGH': {R32_02:'E', R32_05:'J', R32_07:'I', R32_08:'D', R32_09:'H', R32_10:'G', R32_13:'L', R32_15:'K'},
