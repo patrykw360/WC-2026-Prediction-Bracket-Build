@@ -643,37 +643,28 @@ function renderRound2Section(isMe) {
   var r1Preds = isMe ? myPreds : viewedPreds;
   var r2Pts = 0;   // Accumulate R2 points here — added to overall total by caller
 
-  // ── Build the bracket for THIS user's R2 view ──
+  // ── Build the R2 bracket for THIS user's view ──
   // Priority order for each match (winners chain forward into next round's teams):
   //   1. Actual entered result  (real outcome, beats everything)
   //   2. User's own R2 prediction  (their hopes — fills in future rounds before results exist)
-  //   3. User's R1 group prediction (needed so isGroupStageComplete passes and R32 seeds)
-  // This way R16/QF/SF/Final team names auto-populate from the user's R32 picks,
-  // matching how R1 already works. Once admin enters the real R32 result, that
-  // takes over and the user sees real names.
+  // R32 team names come DIRECTLY from data.js (official Flashscore matchups).
+  // Every user sees the same R32, then chains R16+ from their picks or real results.
   var chainPreds = {};
-  // 1) Seed with user's R1 predictions (needed for group-stage-complete check + fallback KO chain)
-  Object.keys(r1Preds).forEach(function(id) {
-    var p = r1Preds[id];
-    if (p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined) {
-      chainPreds[id] = { a: p.a, b: p.b, w: p.w || null };
-    }
-  });
-  // 2) Overlay R2 KO predictions on top (user's Round 2 picks trump their old R1 picks for chaining)
+  // 1) Overlay R2 KO predictions (used for chaining winners into R16+)
   Object.keys(preds).forEach(function(id) {
     var p = preds[id];
     if (p && p.a !== null && p.a !== undefined && p.b !== null && p.b !== undefined) {
       chainPreds[id] = { a: p.a, b: p.b, w: p.w || null };
     }
   });
-  // 3) Overlay actual entered results (real outcomes beat everything)
+  // 2) Overlay actual entered results (real outcomes beat everything)
   Object.keys(allResults).forEach(function(id){
     var r = allResults[id];
     if (r && r.goals_a !== null && r.goals_a !== undefined && r.goals_b !== null && r.goals_b !== undefined) {
       chainPreds[id] = { a: r.goals_a, b: r.goals_b, w: r.winner || null };
     }
   });
-  var officialBracket = buildBracket(chainPreds);
+  var officialBracket = buildBracketR2(chainPreds);
 
   var html = '';
   var r2Locked = isR2Locked();
