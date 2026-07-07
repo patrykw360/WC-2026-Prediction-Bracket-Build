@@ -112,6 +112,14 @@
       <button class="btn-primary" onclick="runR1KoBackfill()">Run backfill</button>
     </div>
 
+    <!-- RECOMPUTE STANDINGS -->
+    <div class="admin-card">
+      <h2>🧮 Recompute Standings</h2>
+      <p class="muted">Runs the exact player-page scoring algorithm for every user and stores the totals the Standings tab reads. Runs automatically after each result save — use this button after SQL changes or if standings ever look stale.</p>
+      <div id="recompute-status" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
+      <button class="btn-primary" onclick="recomputeAllScores(true)">Recompute standings now</button>
+    </div>
+
     <!-- ROSTER PASTE-IN -->
     <div class="admin-card">
       <h2>📋 Squad Rosters</h2>
@@ -183,9 +191,9 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="config.js?v=36"></script>
-<script src="data.js?v=36"></script>
-<script src="bracket.js?v=36"></script>
+<script src="config.js?v=38"></script>
+<script src="data.js?v=38"></script>
+<script src="bracket.js?v=38"></script>
 <script>
 // All teams from data.js
 var ALL_TEAMS = [];
@@ -915,6 +923,8 @@ function saveResultRow(matchId, isKnockout, teamA, teamB) {
           delete resultsState.editing[matchId];
           renderResultsList();
           toast('✓ Saved ' + a + ' - ' + b + (winner ? ' (' + winner + ')' : ''), 'ok');
+          // Keep the standings in lockstep with the player pages
+          recomputeAllScores(false);
         });
       });
     });
@@ -1071,6 +1081,14 @@ function runR1KoBackfill() {
 
   setBackfillStatus('<span class="spinner"></span> Loading users...');
 
+  // Results are needed to mirror the client's late-joiner auto-fill: matches a
+  // user never predicted get the real result as a pseudo-pick so their bracket
+  // still builds (exactly what renderPredict does before calling buildBracket).
+  window.__backfillResults = {};
+  var resultsReady = sb.from('results').select('match_id,goals_a,goals_b,winner').then(function(rr) {
+    (rr.data || []).forEach(function(r){ window.__backfillResults[r.match_id] = r; });
+  });
+
   // Get all user IDs (paginated in case there's a lot)
   var allUserIds = [];
   function fetchUsers(offset) {
@@ -1083,7 +1101,7 @@ function runR1KoBackfill() {
     });
   }
 
-  fetchUsers(0).then(function(userIds) {
+  resultsReady.then(function(){ return fetchUsers(0); }).then(function(userIds) {
     setBackfillStatus('Found ' + userIds.length + ' users. Processing...');
     return processUsers(userIds);
   }).catch(function(e) {
@@ -1120,9 +1138,24 @@ function processUsers(userIds) {
           };
         });
 
+        // Mirror the client's late-joiner overlay: any match with no user
+        // prediction but a real result gets the result as a pseudo-pick.
+        // Without this, users with incomplete group predictions fail
+        // isGroupStageComplete → empty bracket → slot-text snapshots →
+        // server wrongly zeroes ALL their R1 knockout points.
+        var effective = {};
+        Object.keys(preds).forEach(function(id){ effective[id] = preds[id]; });
+        GROUP_MATCHES.concat(KO_MATCHES).forEach(function(m) {
+          if (effective[m.id]) return;
+          var res = window.__backfillResults[m.id];
+          if (res && res.goals_a !== null && res.goals_a !== undefined) {
+            effective[m.id] = { a: res.goals_a, b: res.goals_b, w: res.winner || null };
+          }
+        });
+
         // Build the user's personal bracket
         var bracket;
-        try { bracket = buildBracket(preds); }
+        try { bracket = buildBracket(effective); }
         catch (e) { console.warn('User', uid, 'bracket build failed:', e); return; }
 
         // For each KO match: if user has a prediction and no pred_team stored yet, update
@@ -1165,6 +1198,150 @@ function processUsers(userIds) {
   }
 
   return processNext();
+}
+
+// ─────────────────────────────────────────────────────────────
+// RECOMPUTE STANDINGS — single source of truth.
+// Replicates renderPredict's scoring EXACTLY for every user and writes
+// the totals into computed_scores (which the leaderboard view reads).
+// ─────────────────────────────────────────────────────────────
+function scorePAdmin(pa,pb,ra,rb){
+  if(pa===null||pa===undefined||pb===null||pb===undefined||ra===null||ra===undefined||rb===null||rb===undefined)return null;
+  if(pa===ra&&pb===rb)return 4;
+  if((pa-pb)===(ra-rb))return 3;
+  if(Math.sign(pa-pb)===Math.sign(ra-rb))return 2;
+  return 0;
+}
+
+function setRecomputeStatus(msg){
+  var el=document.getElementById('recompute-status');
+  if(el)el.innerHTML=msg;
+}
+
+function fetchAllRows(table, cols) {
+  var out=[];
+  function page(offset){
+    return sb.from(table).select(cols).range(offset, offset+999).then(function(r){
+      if(r.error)throw r.error;
+      var batch=r.data||[];
+      out=out.concat(batch);
+      if(batch.length===1000)return page(offset+1000);
+      return out;
+    });
+  }
+  return page(0);
+}
+
+function recomputeAllScores(verbose){
+  if(verbose)setRecomputeStatus('<span class="spinner"></span> Loading data...');
+  return Promise.all([
+    fetchAllRows('profiles','id,display_name'),
+    fetchAllRows('results','match_id,goals_a,goals_b,winner,team_a,team_b,multiplier'),
+    fetchAllRows('predictions','user_id,match_id,round,goals_a,goals_b,winner')
+  ]).then(function(rs){
+    var profiles=rs[0];
+    var results={};
+    rs[1].forEach(function(r){results[r.match_id]=r;});
+    // Group predictions per user
+    var predsByUser={};
+    rs[2].forEach(function(p){
+      var u=predsByUser[p.user_id]||(predsByUser[p.user_id]={r1:{},r2:{}});
+      var bucket=(p.round===2)?u.r2:u.r1;
+      bucket[p.match_id]={a:p.goals_a,b:p.goals_b,w:p.winner};
+    });
+
+    var rows=[];
+    profiles.forEach(function(pr){
+      var u=predsByUser[pr.id]||{r1:{},r2:{}};
+      // ── Mirror renderPredict: auto-fill overlay on R1 ──
+      var effective={}, autoFilled={};
+      Object.keys(u.r1).forEach(function(id){
+        var p=u.r1[id];
+        if(p.a!==null&&p.a!==undefined&&p.b!==null&&p.b!==undefined)effective[id]=p;
+      });
+      GROUP_MATCHES.concat(KO_MATCHES).forEach(function(m){
+        if(effective[m.id])return;
+        var r=results[m.id];
+        if(r&&r.goals_a!==null&&r.goals_a!==undefined){
+          effective[m.id]={a:r.goals_a,b:r.goals_b,w:r.winner||null};
+          autoFilled[m.id]=true;
+        }
+      });
+      var bracket;
+      try{bracket=buildBracket(effective);}catch(e){bracket={koTeams:{},complete:{}};}
+
+      var total=0,r1pts=0,r2pts=0,t4=0,t3=0,t2=0,t0=0,bonus=0,scored=0;
+      function tally(bp,fp){
+        if(fp===null)return;
+        scored++; total+=fp;
+        if(bp===4)t4++;else if(bp===3)t3++;else if(bp===2)t2++;else if(bp===0)t0++;
+        if(bp>0)bonus+=(fp-bp);
+      }
+
+      // Group stage (R1)
+      GROUP_MATCHES.forEach(function(m){
+        var p=effective[m.id];
+        if(!p||autoFilled[m.id])return;
+        var r=results[m.id];
+        if(!r)return;
+        var bp=scorePAdmin(p.a,p.b,r.goals_a,r.goals_b);
+        if(bp===null)return;
+        var mult=Number(r.multiplier||1);
+        var fp=Math.round(bp*mult*100)/100;
+        r1pts+=fp; tally(bp,fp);
+      });
+
+      // R1 knockouts — team-match gate vs the user's live bracket
+      KO_MATCHES.forEach(function(m){
+        var p=effective[m.id];
+        if(!p||autoFilled[m.id])return;
+        var r=results[m.id];
+        if(!r)return;
+        var br=bracket.koTeams[m.id]||{};
+        var myA=br.a||m.a, myB=br.b||m.b;
+        var teamsMatch=r.team_a&&r.team_b&&myA===r.team_a&&myB===r.team_b;
+        if(!teamsMatch)return;   // gated: no points, not counted (same as page)
+        var bp=scorePAdmin(p.a,p.b,r.goals_a,r.goals_b);
+        if(bp===null)return;
+        var mult=Number(r.multiplier||1);
+        var fp=Math.round(bp*mult*100)/100;
+        r1pts+=fp; tally(bp,fp);
+      });
+
+      // Round 2 — official matchups, no gate
+      KO_MATCHES.forEach(function(m){
+        var p=u.r2[m.id];
+        if(!p||p.a===null||p.a===undefined||p.b===null||p.b===undefined)return;
+        var r=results[m.id];
+        if(!r)return;
+        var bp=scorePAdmin(p.a,p.b,r.goals_a,r.goals_b);
+        if(bp===null)return;
+        var mult=Number(r.multiplier||1);
+        var fp=Math.round(bp*mult*100)/100;
+        r2pts+=fp; tally(bp,fp);
+      });
+
+      rows.push({
+        user_id:pr.id,
+        exact_scores:t4, correct_gd:t3, correct_tendency:t2, wrong:t0,
+        bonus_pts:Math.round(bonus*100)/100,
+        scored_matches:scored,
+        round1_pts:Math.round(r1pts*100)/100,
+        round2_pts:Math.round(r2pts*100)/100,
+        total_pts:Math.round(total*100)/100,
+        updated_at:new Date().toISOString()
+      });
+    });
+
+    return sb.from('computed_scores').upsert(rows,{onConflict:'user_id'}).then(function(r){
+      if(r.error)throw r.error;
+      if(verbose)setRecomputeStatus('<span style="color:var(--green)">✓ Standings recomputed for '+rows.length+' users at '+new Date().toLocaleTimeString()+'</span>');
+      return rows.length;
+    });
+  }).catch(function(e){
+    if(verbose)setRecomputeStatus('<span style="color:var(--red)">Error: '+(e.message||e)+'</span>');
+    else console.warn('recompute failed:',e);
+  });
 }
 </script>
 </body>
