@@ -107,6 +107,7 @@
     <div class="admin-card">
       <h2>🔧 Backfill R1 Knockout Team Names</h2>
       <p class="muted">One-time migration. Iterates every user's R1 knockout predictions and stores their bracket-derived team names for scoring. Run this AFTER applying batch_m.sql. After running, R1 KO scoring uses the team-match rule.</p>
+      <p class="muted" style="margin-top:6px"><label style="cursor:pointer"><input type="checkbox" id="backfill-force" style="vertical-align:middle;margin-right:6px">Force re-sync (overwrite ALL existing snapshots — use if standings and player pages disagree, e.g. snapshots were written by an outdated cached bracket.js)</label></p>
       <div id="backfill-status" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
       <button class="btn-primary" onclick="runR1KoBackfill()">Run backfill</button>
     </div>
@@ -182,9 +183,9 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="config.js?v=35"></script>
-<script src="data.js?v=35"></script>
-<script src="bracket.js?v=35"></script>
+<script src="config.js?v=36"></script>
+<script src="data.js?v=36"></script>
+<script src="bracket.js?v=36"></script>
 <script>
 // All teams from data.js
 var ALL_TEAMS = [];
@@ -1061,7 +1062,12 @@ function setBackfillStatus(msg) {
 }
 
 function runR1KoBackfill() {
-  if (!confirm('This will update every user\'s R1 knockout prediction rows to include their bracket-derived team names. Existing team_a/team_b entries won\'t be overwritten. Continue?')) return;
+  var force = !!(document.getElementById('backfill-force') && document.getElementById('backfill-force').checked);
+  var msg = force
+    ? 'FORCE MODE: this will OVERWRITE the stored team snapshot on every R1 knockout prediction using the current bracket logic. Standings will re-score afterwards. Continue?'
+    : 'This will update every user\'s R1 knockout prediction rows to include their bracket-derived team names. Existing team_a/team_b entries won\'t be overwritten. Continue?';
+  if (!confirm(msg)) return;
+  window.__backfillForce = force;
 
   setBackfillStatus('<span class="spinner"></span> Loading users...');
 
@@ -1124,7 +1130,7 @@ function processUsers(userIds) {
         koMatchIds.forEach(function(mid) {
           var pred = preds[mid];
           if (!pred || pred.a === null || pred.a === undefined) return;
-          if (pred.pred_team_a && pred.pred_team_b) return; // already backfilled
+          if (!window.__backfillForce && pred.pred_team_a && pred.pred_team_b) return; // already backfilled (skip unless force)
           var m = KO_MATCHES.find(function(x){return x.id===mid;});
           var br = bracket.koTeams[mid] || {};
           var teamA = br.a || m.a;
