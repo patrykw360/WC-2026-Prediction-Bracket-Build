@@ -1463,6 +1463,13 @@ function selectUser(uid,name){
   var btn2=document.getElementById('back-to-mine-btn');
   if(btn2)btn2.style.display='';
   document.getElementById('panel-predict').innerHTML='<div class="panel-load"><div class="spinner"></div> Loading predictions...</div>';
+  // Clear the header stats immediately so the previous player's numbers
+  // never linger while the new player's data loads.
+  var sf=document.getElementById('s-filled'), sp=document.getElementById('s-pts');
+  if(sf)sf.textContent='…';
+  if(sp)sp.textContent='…';
+  var bar=document.getElementById('prog-text');
+  if(bar)bar.textContent='Loading…';
   Promise.all([
     sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).eq('round',1),
     sb.from('predictions').select('match_id,goals_a,goals_b,winner').eq('user_id',uid).eq('round',2)
